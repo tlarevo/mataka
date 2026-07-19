@@ -52,6 +52,10 @@ pub fn reciprocal_rank_fusion(result_lists: [Vec<RetrievalResult>; 4]) -> Vec<Me
     }
 
     let mut out: Vec<MergedCandidate> = merged.into_values().collect();
-    out.sort_by(|a, b| b.rrf_score.partial_cmp(&a.rrf_score).unwrap_or(std::cmp::Ordering::Equal));
+    out.sort_by(|a, b| {
+        b.rrf_score
+            .partial_cmp(&a.rrf_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     out
 }

@@ -71,14 +71,22 @@ pub async fn recall(
                 score: cosine(&qvec, &blob_to_f32s(&blob)),
             })
             .collect();
-        scored.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         scored
     };
 
     // --- Arm 2: BM25 via FTS5 ---
     let fts_query: String = query
         .split_whitespace()
-        .map(|w| w.chars().filter(|c| c.is_alphanumeric()).collect::<String>())
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+        })
         .filter(|w| !w.is_empty())
         .collect::<Vec<_>>()
         .join(" OR ");
@@ -104,7 +112,12 @@ pub async fn recall(
     };
 
     // --- Arm 3: graph (units sharing entities with top lexical/semantic seeds) ---
-    let seed_ids: Vec<String> = semantic.iter().take(5).chain(bm25.iter().take(5)).map(|r| r.unit_id.clone()).collect();
+    let seed_ids: Vec<String> = semantic
+        .iter()
+        .take(5)
+        .chain(bm25.iter().take(5))
+        .map(|r| r.unit_id.clone())
+        .collect();
     let graph = if seed_ids.is_empty() {
         vec![]
     } else {
@@ -117,11 +130,17 @@ pub async fn recall(
              GROUP BY ue2.unit_id ORDER BY overlap DESC LIMIT {n}"
         );
         let mut stmt = conn.prepare(&sql)?;
-        let bind: Vec<&dyn rusqlite::ToSql> =
-            seed_ids.iter().chain(seed_ids.iter()).map(|s| s as &dyn rusqlite::ToSql).collect();
+        let bind: Vec<&dyn rusqlite::ToSql> = seed_ids
+            .iter()
+            .chain(seed_ids.iter())
+            .map(|s| s as &dyn rusqlite::ToSql)
+            .collect();
         let v: Vec<RetrievalResult> = stmt
             .query_map(&bind[..], |r| {
-                Ok(RetrievalResult { unit_id: r.get(0)?, score: r.get::<_, i64>(1)? as f32 })
+                Ok(RetrievalResult {
+                    unit_id: r.get(0)?,
+                    score: r.get::<_, i64>(1)? as f32,
+                })
             })?
             .filter_map(|x| x.ok())
             .collect();
@@ -137,7 +156,10 @@ pub async fn recall(
         )?;
         let v: Vec<RetrievalResult> = stmt
             .query_map(params![bank_id, n as i64], |r| {
-                Ok(RetrievalResult { unit_id: r.get(0)?, score: 0.0 })
+                Ok(RetrievalResult {
+                    unit_id: r.get(0)?,
+                    score: 0.0,
+                })
             })?
             .filter_map(|x| x.ok())
             .collect();
@@ -169,7 +191,9 @@ pub async fn recall(
                 ))
             },
         );
-        let Ok((text, ft, ctx, occ, tags)) = row else { continue };
+        let Ok((text, ft, ctx, occ, tags)) = row else {
+            continue;
+        };
         if !type_filter.contains(&ft) {
             continue;
         }

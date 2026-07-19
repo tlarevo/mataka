@@ -127,7 +127,9 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     pub fn ensure_bank(&self, bank_id: &str) -> Result<()> {
@@ -164,7 +166,8 @@ impl Store {
     pub fn bank_stats(&self, bank_id: &str) -> Result<Value> {
         let conn = self.conn.lock().unwrap();
         let count = |sql: &str| -> i64 {
-            conn.query_row(sql, params![bank_id], |r| r.get(0)).unwrap_or(0)
+            conn.query_row(sql, params![bank_id], |r| r.get(0))
+                .unwrap_or(0)
         };
         Ok(serde_json::json!({
             "bank_id": bank_id,

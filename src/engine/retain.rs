@@ -54,7 +54,12 @@ pub async fn retain(
 
     // Phase 1: LLM extraction (tolerate fenced JSON from small local models)
     let raw = llm.chat(EXTRACTION_SYSTEM, content, true).await?;
-    let cleaned = raw.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let cleaned = raw
+        .trim()
+        .trim_start_matches("```json")
+        .trim_start_matches("```")
+        .trim_end_matches("```")
+        .trim();
     let extraction: Extraction = serde_json::from_str(cleaned).unwrap_or(Extraction {
         facts: vec![ExtractedFact {
             text: content.to_string(),
@@ -64,7 +69,10 @@ pub async fn retain(
         }],
     });
     if extraction.facts.is_empty() {
-        return Ok(RetainOutcome { memory_ids: vec![], fact_count: 0 });
+        return Ok(RetainOutcome {
+            memory_ids: vec![],
+            fact_count: 0,
+        });
     }
 
     // Phase 2: embed all facts in one batch
@@ -102,5 +110,8 @@ pub async fn retain(
         ids.push(id);
     }
 
-    Ok(RetainOutcome { fact_count: ids.len(), memory_ids: ids })
+    Ok(RetainOutcome {
+        fact_count: ids.len(),
+        memory_ids: ids,
+    })
 }

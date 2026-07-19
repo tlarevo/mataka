@@ -9,7 +9,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{delete, get, post, put},
+    routing::{get, post, put},
     Router,
 };
 use rusqlite::params;
@@ -27,16 +27,32 @@ type S = Arc<AppState>;
 pub fn router(state: S) -> Router {
     Router::new()
         .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
-        .route("/version", get(|| async {
-            Json(json!({"version": "0.1.0-mataka", "compat": "hindsight-0.8.4"}))
-        }))
+        .route(
+            "/version",
+            get(|| async { Json(json!({"version": "0.1.0-mataka", "compat": "hindsight-0.8.4"})) }),
+        )
         .route("/v1/default/banks", get(list_banks))
-        .route("/v1/default/banks/:bank_id", put(put_bank).patch(patch_bank).delete(delete_bank))
+        .route(
+            "/v1/default/banks/:bank_id",
+            put(put_bank).patch(patch_bank).delete(delete_bank),
+        )
         .route("/v1/default/banks/:bank_id/stats", get(bank_stats))
-        .route("/v1/default/banks/:bank_id/memories", post(retain_memories).delete(delete_memories))
-        .route("/v1/default/banks/:bank_id/memories/list", get(list_memories))
-        .route("/v1/default/banks/:bank_id/memories/recall", post(recall_memories))
-        .route("/v1/default/banks/:bank_id/memories/:memory_id", get(get_memory).delete(delete_memory))
+        .route(
+            "/v1/default/banks/:bank_id/memories",
+            post(retain_memories).delete(delete_memories),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/memories/list",
+            get(list_memories),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/memories/recall",
+            post(recall_memories),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/memories/:memory_id",
+            get(get_memory).delete(delete_memory),
+        )
         .route("/v1/default/banks/:bank_id/reflect", post(reflect_bank))
         .route("/v1/default/banks/:bank_id/entities", get(list_entities))
         .with_state(state)
@@ -45,7 +61,11 @@ pub fn router(state: S) -> Router {
 struct ApiError(anyhow::Error);
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": self.0.to_string()}))).into_response()
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"detail": self.0.to_string()})),
+        )
+            .into_response()
     }
 }
 impl<E: Into<anyhow::Error>> From<E> for ApiError {
@@ -58,7 +78,8 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
 
 async fn list_banks(State(s): State<S>) -> Result<Json<Value>, ApiError> {
     let conn = s.store.conn.lock().unwrap();
-    let mut stmt = conn.prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
+    let mut stmt =
+        conn.prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
     let banks: Vec<Value> = stmt
         .query_map([], |r| {
             Ok(json!({
@@ -80,7 +101,11 @@ struct BankBody {
     disposition: Option<Value>,
 }
 
-async fn put_bank(State(s): State<S>, Path(bank_id): Path<String>, body: Option<Json<BankBody>>) -> Result<Json<Value>, ApiError> {
+async fn put_bank(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+    body: Option<Json<BankBody>>,
+) -> Result<Json<Value>, ApiError> {
     let b = body.map(|Json(b)| b).unwrap_or_default();
     let now = chrono::Utc::now().to_rfc3339();
     s.store.conn.lock().unwrap().execute(
@@ -94,23 +119,39 @@ async fn put_bank(State(s): State<S>, Path(bank_id): Path<String>, body: Option<
             bank_id,
             b.name.clone().unwrap_or_else(|| bank_id.clone()),
             b.mission.clone().unwrap_or_default(),
-            b.disposition.map(|d| d.to_string()).unwrap_or_else(|| "{}".into()),
+            b.disposition
+                .map(|d| d.to_string())
+                .unwrap_or_else(|| "{}".into()),
             now
         ],
     )?;
     Ok(Json(json!({"bank_id": bank_id, "status": "ok"})))
 }
 
-async fn patch_bank(state: State<S>, path: Path<String>, body: Option<Json<BankBody>>) -> Result<Json<Value>, ApiError> {
+async fn patch_bank(
+    state: State<S>,
+    path: Path<String>,
+    body: Option<Json<BankBody>>,
+) -> Result<Json<Value>, ApiError> {
     put_bank(state, path, body).await
 }
 
-async fn delete_bank(State(s): State<S>, Path(bank_id): Path<String>) -> Result<Json<Value>, ApiError> {
-    s.store.conn.lock().unwrap().execute("DELETE FROM banks WHERE bank_id=?1", params![bank_id])?;
+async fn delete_bank(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    s.store
+        .conn
+        .lock()
+        .unwrap()
+        .execute("DELETE FROM banks WHERE bank_id=?1", params![bank_id])?;
     Ok(Json(json!({"bank_id": bank_id, "status": "deleted"})))
 }
 
-async fn bank_stats(State(s): State<S>, Path(bank_id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn bank_stats(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     Ok(Json(s.store.bank_stats(&bank_id)?))
 }
 
@@ -147,8 +188,13 @@ async fn retain_memories(
     let mut total_facts = 0;
     for item in &items {
         let out = engine::retain::retain(
-            &s.store, &s.llm, &bank_id, &item.content,
-            item.context.as_deref(), &item.tags, &item.metadata,
+            &s.store,
+            &s.llm,
+            &bank_id,
+            &item.content,
+            item.context.as_deref(),
+            &item.tags,
+            &item.metadata,
         )
         .await?;
         total_facts += out.fact_count;
@@ -188,8 +234,13 @@ async fn recall_memories(
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<Value>, ApiError> {
     let results = engine::recall::recall(
-        &s.store, &s.llm, &bank_id, &req.query,
-        &req.types.unwrap_or_default(), &req.budget, req.max_tokens,
+        &s.store,
+        &s.llm,
+        &bank_id,
+        &req.query,
+        &req.types.unwrap_or_default(),
+        &req.budget,
+        req.max_tokens,
     )
     .await?;
     Ok(Json(json!({"results": results})))
@@ -254,7 +305,10 @@ async fn list_memories(
     Ok(Json(json!({"items": items})))
 }
 
-async fn get_memory(State(s): State<S>, Path((bank_id, memory_id)): Path<(String, String)>) -> Result<Response, ApiError> {
+async fn get_memory(
+    State(s): State<S>,
+    Path((bank_id, memory_id)): Path<(String, String)>,
+) -> Result<Response, ApiError> {
     let conn = s.store.conn.lock().unwrap();
     let row = conn.query_row(
         "SELECT text, fact_type, context, occurred_start, tags, metadata, created_at
@@ -275,11 +329,18 @@ async fn get_memory(State(s): State<S>, Path((bank_id, memory_id)): Path<(String
     );
     match row {
         Ok(v) => Ok(Json(v).into_response()),
-        Err(_) => Ok((StatusCode::NOT_FOUND, Json(json!({"detail": "memory not found"}))).into_response()),
+        Err(_) => Ok((
+            StatusCode::NOT_FOUND,
+            Json(json!({"detail": "memory not found"})),
+        )
+            .into_response()),
     }
 }
 
-async fn delete_memory(State(s): State<S>, Path((bank_id, memory_id)): Path<(String, String)>) -> Result<Json<Value>, ApiError> {
+async fn delete_memory(
+    State(s): State<S>,
+    Path((bank_id, memory_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
     s.store.conn.lock().unwrap().execute(
         "DELETE FROM memory_units WHERE bank_id=?1 AND id=?2",
         params![bank_id, memory_id],
@@ -287,7 +348,10 @@ async fn delete_memory(State(s): State<S>, Path((bank_id, memory_id)): Path<(Str
     Ok(Json(json!({"status": "deleted"})))
 }
 
-async fn delete_memories(State(s): State<S>, Path(bank_id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn delete_memories(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let n = s.store.conn.lock().unwrap().execute(
         "DELETE FROM memory_units WHERE bank_id=?1",
         params![bank_id],
@@ -295,7 +359,10 @@ async fn delete_memories(State(s): State<S>, Path(bank_id): Path<String>) -> Res
     Ok(Json(json!({"deleted": n})))
 }
 
-async fn list_entities(State(s): State<S>, Path(bank_id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn list_entities(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     let conn = s.store.conn.lock().unwrap();
     let mut stmt = conn.prepare(
         "SELECT e.id, e.canonical_name, COUNT(ue.unit_id) FROM entities e

@@ -91,7 +91,9 @@ impl LlmClient {
             .error_for_status()?
             .json()
             .await?;
-        let data = resp["data"].as_array().ok_or_else(|| anyhow!("bad embeddings response"))?;
+        let data = resp["data"]
+            .as_array()
+            .ok_or_else(|| anyhow!("bad embeddings response"))?;
         let mut out = Vec::with_capacity(data.len());
         for item in data {
             let v: Vec<f32> = item["embedding"]
@@ -148,6 +150,9 @@ fn mock_chat(system: &str, user: &str) -> String {
             .collect();
         json!({ "facts": facts }).to_string()
     } else {
-        format!("[mock reflect] Based on retained memories, regarding: {}", user.chars().take(120).collect::<String>())
+        format!(
+            "[mock reflect] Based on retained memories, regarding: {}",
+            user.chars().take(120).collect::<String>()
+        )
     }
 }
