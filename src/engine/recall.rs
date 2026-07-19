@@ -100,8 +100,9 @@ pub async fn recall(
 
     // --- Arm 1: semantic ---
     let qvec = llm.embed(&[query.to_string()]).await?.remove(0);
+    let bank = store.get_bank(bank_id)?;
     let semantic = {
-        let conn = store.conn.lock().unwrap();
+        let conn = bank.read_conn();
         let mut stmt = conn.prepare(
             "SELECT id, embedding FROM memory_units WHERE bank_id=?1 AND embedding IS NOT NULL",
         )?;
@@ -137,7 +138,7 @@ pub async fn recall(
     let bm25 = if fts_query.is_empty() {
         vec![]
     } else {
-        let conn = store.conn.lock().unwrap();
+        let conn = bank.read_conn();
         let mut stmt = conn.prepare(
             "SELECT mu.id, bm25(memory_fts) AS s FROM memory_fts
              JOIN memory_units mu ON mu.rowid = memory_fts.rowid
@@ -165,7 +166,7 @@ pub async fn recall(
     let graph = if seed_ids.is_empty() {
         vec![]
     } else {
-        let conn = store.conn.lock().unwrap();
+        let conn = bank.read_conn();
         let placeholders = seed_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
         let sql = format!(
             "SELECT ue2.unit_id, COUNT(*) AS overlap FROM unit_entities ue1
@@ -193,7 +194,7 @@ pub async fn recall(
 
     // --- Arm 4: temporal (recency) ---
     let temporal = {
-        let conn = store.conn.lock().unwrap();
+        let conn = bank.read_conn();
         let mut stmt = conn.prepare(
             "SELECT id FROM memory_units WHERE bank_id=?1
              ORDER BY COALESCE(occurred_start, created_at) DESC LIMIT ?2",
@@ -218,7 +219,7 @@ pub async fn recall(
         cap_per_source(temporal, n),
     ]);
 
-    let conn = store.conn.lock().unwrap();
+    let conn = bank.read_conn();
     let mut results = Vec::new();
     let mut token_used = 0usize;
     for cand in fused {

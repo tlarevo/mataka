@@ -89,20 +89,7 @@ impl<E: Into<anyhow::Error>> From<E> for ApiError {
 // ---------- banks ----------
 
 async fn list_banks(State(s): State<S>) -> Result<Json<Value>, ApiError> {
-    let conn = s.store.conn.lock().unwrap();
-    let mut stmt =
-        conn.prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
-    let banks: Vec<Value> = stmt
-        .query_map([], |r| {
-            Ok(json!({
-                "bank_id": r.get::<_, String>(0)?,
-                "name": r.get::<_, Option<String>>(1)?,
-                "mission": r.get::<_, String>(2)?,
-                "created_at": r.get::<_, String>(3)?,
-            }))
-        })?
-        .filter_map(|x| x.ok())
-        .collect();
+    let banks = s.store.list_banks()?;
     Ok(Json(json!({"banks": banks})))
 }
 
@@ -119,23 +106,15 @@ async fn put_bank(
     body: Option<Json<BankBody>>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body.map(|Json(b)| b).unwrap_or_default();
-    let now = chrono::Utc::now().to_rfc3339();
-    s.store.conn.lock().unwrap().execute(
-        "INSERT INTO banks(bank_id, name, mission, disposition, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?5)
-         ON CONFLICT(bank_id) DO UPDATE SET
-           name=COALESCE(excluded.name, name),
-           mission=COALESCE(NULLIF(excluded.mission,''), mission),
-           updated_at=excluded.updated_at",
-        params![
-            bank_id,
-            b.name.clone().unwrap_or_else(|| bank_id.clone()),
-            b.mission.clone().unwrap_or_default(),
-            b.disposition
-                .map(|d| d.to_string())
-                .unwrap_or_else(|| "{}".into()),
-            now
-        ],
+    Store::validate_bank_id(&bank_id)?;
+    s.store.ensure_bank(&bank_id)?;
+    s.store.upsert_bank(
+        &bank_id,
+        &b.name.clone().unwrap_or_else(|| bank_id.clone()),
+        &b.mission.clone().unwrap_or_default(),
+        &b.disposition
+            .map(|d| d.to_string())
+            .unwrap_or_else(|| "{}".into()),
     )?;
     Ok(Json(json!({"bank_id": bank_id, "status": "ok"})))
 }
@@ -152,11 +131,7 @@ async fn delete_bank(
     State(s): State<S>,
     Path(bank_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    s.store
-        .conn
-        .lock()
-        .unwrap()
-        .execute("DELETE FROM banks WHERE bank_id=?1", params![bank_id])?;
+    s.store.delete_bank(&bank_id)?;
     Ok(Json(json!({"bank_id": bank_id, "status": "deleted"})))
 }
 
@@ -202,7 +177,7 @@ async fn retain_memories(
         let bank = bank_id.clone();
         let oid = op_id.clone();
         tokio::spawn(async move {
-            let _ = state.store.update_operation_status(&oid, "running", None);
+            let _ = state.store.update_operation_status(&bank, &oid, "running", None);
             let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
             match result {
                 Ok(out) => {
@@ -210,11 +185,11 @@ async fn retain_memories(
                         "facts_extracted": out.fact_count,
                         "memory_ids": out.memory_ids,
                     });
-                    let _ = state.store.update_operation_status(&oid, "completed", Some(&detail));
+                    let _ = state.store.update_operation_status(&bank, &oid, "completed", Some(&detail));
                 }
                 Err(e) => {
                     let detail = json!({"error": e.to_string()});
-                    let _ = state.store.update_operation_status(&oid, "failed", Some(&detail));
+                    let _ = state.store.update_operation_status(&bank, &oid, "failed", Some(&detail));
                 }
             }
         });
@@ -368,7 +343,8 @@ async fn list_memories(
     Path(bank_id): Path<String>,
     Query(q): Query<ListQuery>,
 ) -> Result<Json<Value>, ApiError> {
-    let conn = s.store.conn.lock().unwrap();
+    let bank = s.store.get_bank(&bank_id)?;
+    let conn = bank.read_conn();
     let mut stmt = conn.prepare(
         "SELECT id, text, fact_type, occurred_start, created_at FROM memory_units
          WHERE bank_id=?1 ORDER BY created_at DESC LIMIT ?2 OFFSET ?3",
@@ -392,7 +368,8 @@ async fn get_memory(
     State(s): State<S>,
     Path((bank_id, memory_id)): Path<(String, String)>,
 ) -> Result<Response, ApiError> {
-    let conn = s.store.conn.lock().unwrap();
+    let bank = s.store.get_bank(&bank_id)?;
+    let conn = bank.read_conn();
     let row = conn.query_row(
         "SELECT text, fact_type, context, occurred_start, tags, metadata, created_at
          FROM memory_units WHERE bank_id=?1 AND id=?2",
@@ -424,7 +401,9 @@ async fn delete_memory(
     State(s): State<S>,
     Path((bank_id, memory_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    s.store.conn.lock().unwrap().execute(
+    let bank = s.store.get_bank(&bank_id)?;
+    let conn = bank.get_write_conn();
+    conn.execute(
         "DELETE FROM memory_units WHERE bank_id=?1 AND id=?2",
         params![bank_id, memory_id],
     )?;
@@ -435,7 +414,9 @@ async fn delete_memories(
     State(s): State<S>,
     Path(bank_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let n = s.store.conn.lock().unwrap().execute(
+    let bank = s.store.get_bank(&bank_id)?;
+    let conn = bank.get_write_conn();
+    let n = conn.execute(
         "DELETE FROM memory_units WHERE bank_id=?1",
         params![bank_id],
     )?;
@@ -446,7 +427,8 @@ async fn list_entities(
     State(s): State<S>,
     Path(bank_id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
-    let conn = s.store.conn.lock().unwrap();
+    let bank = s.store.get_bank(&bank_id)?;
+    let conn = bank.read_conn();
     let mut stmt = conn.prepare(
         "SELECT e.id, e.canonical_name, COUNT(ue.unit_id) FROM entities e
          LEFT JOIN unit_entities ue ON ue.entity_id = e.id
@@ -506,9 +488,9 @@ async fn list_operations(
 
 async fn get_operation_status(
     State(s): State<S>,
-    Path((_bank_id, operation_id)): Path<(String, String)>,
+    Path((bank_id, operation_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    match s.store.get_operation(&operation_id)? {
+    match s.store.get_operation(&bank_id, &operation_id)? {
         Some(op) => {
             let status = op["status"].as_str().unwrap_or("unknown");
             let detail = &op["detail"];
@@ -537,9 +519,9 @@ async fn get_operation_status(
 
 async fn cancel_operation(
     State(s): State<S>,
-    Path((_bank_id, operation_id)): Path<(String, String)>,
+    Path((bank_id, operation_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
-    let deleted = s.store.delete_operation(&operation_id)?;
+    let deleted = s.store.delete_operation(&bank_id, &operation_id)?;
     Ok(Json(json!({
         "success": deleted,
         "message": if deleted {
@@ -556,24 +538,24 @@ async fn retry_operation(
     Path((bank_id, operation_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     // Fetch original payload and op_type
-    let op = s.store.get_operation(&operation_id)?
+    let op = s.store.get_operation(&bank_id, &operation_id)?
         .ok_or_else(|| anyhow::anyhow!("operation not found"))?;
     let status = op["status"].as_str().unwrap_or("");
     if status != "failed" {
         return Err(anyhow::anyhow!("can only retry failed operations").into());
     }
     let _op_type = op["operation_type"].as_str().unwrap_or("retain");
-    let payload = s.store.get_operation_payload(&operation_id)?
+    let payload = s.store.get_operation_payload(&bank_id, &operation_id)?
         .unwrap_or(json!({}));
     // Reset to pending
-    s.store.update_operation_status(&operation_id, "pending", None)?;
+    s.store.update_operation_status(&bank_id, &operation_id, "pending", None)?;
     // Spawn background task
     let state = Arc::clone(&s);
     let bank = bank_id.clone();
     let oid = operation_id.clone();
     let items_value = payload.get("items").cloned().unwrap_or(json!([]));
     tokio::spawn(async move {
-        let _ = state.store.update_operation_status(&oid, "running", None);
+        let _ = state.store.update_operation_status(&bank, &oid, "running", None);
         let items: Vec<RetainItem> = serde_json::from_value(items_value).unwrap_or_default();
         let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
         match result {
@@ -582,11 +564,11 @@ async fn retry_operation(
                     "facts_extracted": out.fact_count,
                     "memory_ids": out.memory_ids,
                 });
-                let _ = state.store.update_operation_status(&oid, "completed", Some(&detail));
+                let _ = state.store.update_operation_status(&bank, &oid, "completed", Some(&detail));
             }
             Err(e) => {
                 let detail = json!({"error": e.to_string()});
-                let _ = state.store.update_operation_status(&oid, "failed", Some(&detail));
+                let _ = state.store.update_operation_status(&bank, &oid, "failed", Some(&detail));
             }
         }
     });

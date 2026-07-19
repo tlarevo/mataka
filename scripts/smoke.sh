@@ -41,8 +41,8 @@ for i in 1 2 3; do
   TAG="source_$i"
   RESP=$(curl -sf -X POST "$BASE/v1/default/banks/$BANK/memories" \
     -H 'Content-Type: application/json' \
-    -d "{\"content\":\"$CONTENT\",\"tags\":[\"$TAG\"],\"metadata\":{\"source\":\"smoke-$i\"}}")
-  check "retain fact $i" '"status":"completed"' "$(echo "$RESP" | tr -d '[:space:]')"
+    -d "{\"items\":[{\"content\":\"$CONTENT\",\"tags\":[\"$TAG\"],\"metadata\":{\"source\":\"smoke-$i\"}}]}")
+  check "retain fact $i" '"success"' "$(echo "$RESP" | tr -d '[:space:]')"
 done
 
 # 4. Recall

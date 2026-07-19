@@ -5,7 +5,6 @@ pub mod retain;
 use crate::llm::LlmClient;
 use crate::store::Store;
 use anyhow::Result;
-use rusqlite::params;
 
 /// Reflect: disposition-aware answer grounded in recalled memories.
 /// Upstream runs an agentic tool loop over Mental Models -> Observations -> Raw
@@ -31,15 +30,16 @@ pub async fn reflect(
     )
     .await?;
 
-    let (mission, disposition) = {
-        let conn = store.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT mission, disposition FROM banks WHERE bank_id=?1",
-            params![bank_id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        )
-        .unwrap_or((String::new(), "{}".into()))
-    };
+    let bank_info = store.get_bank_info(bank_id)?;
+    let mission = bank_info
+        .as_ref()
+        .and_then(|b| b["mission"].as_str())
+        .unwrap_or("")
+        .to_string();
+    let disposition = bank_info
+        .as_ref()
+        .map(|b| b["disposition"].to_string())
+        .unwrap_or_else(|| "{}".into());
 
     let context_block: String = memories
         .iter()

@@ -137,7 +137,8 @@ pub async fn retain(
     for (fact, emb) in all_facts.iter().zip(embeddings.iter()) {
         let id = uuid::Uuid::new_v4().to_string();
         {
-            let conn = store.conn.lock().unwrap();
+            let bank = store.get_bank(bank_id)?;
+            let conn = bank.get_write_conn();
             conn.execute(
                 "INSERT INTO memory_units(id, bank_id, text, fact_type, context, occurred_start, occurred_end, mentioned_at, tags, metadata, embedding, created_at)
                  VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
@@ -151,7 +152,9 @@ pub async fn retain(
         }
         for entity in &fact.entities {
             let eid = store.upsert_entity(bank_id, entity)?;
-            store.conn.lock().unwrap().execute(
+            let bank = store.get_bank(bank_id)?;
+            let conn = bank.get_write_conn();
+            conn.execute(
                 "INSERT OR IGNORE INTO unit_entities(unit_id, entity_id) VALUES (?1,?2)",
                 params![id, eid],
             )?;
