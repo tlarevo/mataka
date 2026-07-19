@@ -57,11 +57,15 @@ graph TB
     Embed --> BankDb
     Embed --> OpenAI
     Extraction --> OpenAI
+    Retain -.-> |async| Consolidation
 
     Recall --> Fusion
     Fusion --> ReadPool
     Fusion --> FTS5
     Fusion --> Embeddings
+
+    Reflect --> Fusion
+    Reflect --> OpenAI
 
     Vet --> Vetting
     Vetting --> WriteConn
