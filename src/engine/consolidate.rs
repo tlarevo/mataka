@@ -253,7 +253,7 @@ async fn consolidate_group(
     }
 
     // Embed the observation
-    let embeddings = llm.embed(&[result.observation_text.clone()]).await?;
+    let embeddings = llm.embed(std::slice::from_ref(&result.observation_text)).await?;
     let emb = embeddings.into_iter().next().unwrap_or_default();
 
     // Insert observation as memory_units row
@@ -354,7 +354,7 @@ mod tests {
 
     fn test_store() -> (Store, PathBuf) {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.into_path();
+        let path = dir.keep();
         let store = Store::open(&path).unwrap();
         (store, path)
     }
