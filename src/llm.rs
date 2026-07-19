@@ -47,6 +47,9 @@ impl LlmClient {
     /// Chat completion returning raw text.
     pub async fn chat(&self, system: &str, user: &str, json_mode: bool) -> Result<String> {
         if self.provider == "mock" {
+            if std::env::var("MATAKA_MOCK_FAIL").is_ok() {
+                return Err(anyhow::anyhow!("mock failure (MATAKA_MOCK_FAIL set)"));
+            }
             return Ok(mock_chat(system, user));
         }
         let mut body = json!({

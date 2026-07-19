@@ -55,6 +55,18 @@ pub fn router(state: S) -> Router {
         )
         .route("/v1/default/banks/:bank_id/reflect", post(reflect_bank))
         .route("/v1/default/banks/:bank_id/entities", get(list_entities))
+        .route(
+            "/v1/default/banks/:bank_id/operations",
+            get(list_operations),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/operations/:operation_id",
+            get(get_operation_status).delete(cancel_operation),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/operations/:operation_id/retry",
+            post(retry_operation),
+        )
         .with_state(state)
 }
 
@@ -157,7 +169,7 @@ async fn bank_stats(
 
 // ---------- retain ----------
 
-#[derive(Deserialize)]
+#[derive(Deserialize, serde::Serialize)]
 struct RetainItem {
     content: String,
     #[serde(default)]
@@ -169,10 +181,11 @@ struct RetainItem {
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
-enum RetainRequest {
-    Batch { items: Vec<RetainItem> },
-    Single(RetainItem),
+struct RetainRequest {
+    items: Vec<RetainItem>,
+    #[serde(default)]
+    #[serde(rename = "async")]
+    run_async: bool,
 }
 
 async fn retain_memories(
@@ -180,17 +193,75 @@ async fn retain_memories(
     Path(bank_id): Path<String>,
     Json(req): Json<RetainRequest>,
 ) -> Result<Json<Value>, ApiError> {
-    let items = match req {
-        RetainRequest::Batch { items } => items,
-        RetainRequest::Single(i) => vec![i],
-    };
+    let items = req.items;
+    let items_count = items.len();
+    if req.run_async {
+        // Create operation row, spawn background task, return 202
+        let op_id = s.store.create_operation(&bank_id, "retain", &json!({"items": items}))?;
+        let state = Arc::clone(&s);
+        let bank = bank_id.clone();
+        let oid = op_id.clone();
+        tokio::spawn(async move {
+            let _ = state.store.update_operation_status(&oid, "running", None);
+            let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
+            match result {
+                Ok(out) => {
+                    let detail = json!({
+                        "facts_extracted": out.fact_count,
+                        "memory_ids": out.memory_ids,
+                    });
+                    let _ = state.store.update_operation_status(&oid, "completed", Some(&detail));
+                }
+                Err(e) => {
+                    let detail = json!({"error": e.to_string()});
+                    let _ = state.store.update_operation_status(&oid, "failed", Some(&detail));
+                }
+            }
+        });
+        Ok(Json(json!({
+            "success": true,
+            "bank_id": bank_id,
+            "items_count": items_count,
+            "async": true,
+            "operation_id": op_id,
+        })))
+    } else {
+        // Synchronous: run inline, return results
+        for item in &items {
+            let _out = engine::retain::retain(
+                &s.store,
+                &s.llm,
+                &bank_id,
+                &item.content,
+                item.context.as_deref(),
+                &item.tags,
+                &item.metadata,
+            )
+            .await?;
+        }
+        Ok(Json(json!({
+            "success": true,
+            "bank_id": bank_id,
+            "items_count": items.len(),
+            "async": false,
+            "operation_id": null,
+        })))
+    }
+}
+
+async fn run_retain_background(
+    store: &Store,
+    llm: &LlmClient,
+    bank_id: &str,
+    items: &[RetainItem],
+) -> Result<engine::retain::RetainOutcome, anyhow::Error> {
     let mut all_ids = Vec::new();
     let mut total_facts = 0;
-    for item in &items {
+    for item in items {
         let out = engine::retain::retain(
-            &s.store,
-            &s.llm,
-            &bank_id,
+            store,
+            llm,
+            bank_id,
             &item.content,
             item.context.as_deref(),
             &item.tags,
@@ -200,13 +271,10 @@ async fn retain_memories(
         total_facts += out.fact_count;
         all_ids.extend(out.memory_ids);
     }
-    Ok(Json(json!({
-        "bank_id": bank_id,
-        "items_processed": items.len(),
-        "facts_extracted": total_facts,
-        "memory_ids": all_ids,
-        "status": "completed"
-    })))
+    Ok(engine::retain::RetainOutcome {
+        fact_count: total_facts,
+        memory_ids: all_ids,
+    })
 }
 
 // ---------- recall ----------
@@ -380,4 +448,136 @@ async fn list_entities(
         .filter_map(|x| x.ok())
         .collect();
     Ok(Json(json!({"entities": items})))
+}
+
+// ---------- operations ----------
+
+#[derive(Deserialize)]
+struct OperationsQuery {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "type")]
+    op_type: Option<String>,
+    #[serde(default = "default_ops_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+fn default_ops_limit() -> i64 {
+    20
+}
+
+async fn list_operations(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+    Query(q): Query<OperationsQuery>,
+) -> Result<Json<Value>, ApiError> {
+    let (ops, total) = s.store.list_operations(
+        &bank_id,
+        q.status.as_deref(),
+        q.op_type.as_deref(),
+        q.limit,
+        q.offset,
+    )?;
+    Ok(Json(json!({
+        "bank_id": bank_id,
+        "total": total,
+        "limit": q.limit,
+        "offset": q.offset,
+        "operations": ops,
+    })))
+}
+
+async fn get_operation_status(
+    State(s): State<S>,
+    Path((_bank_id, operation_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    match s.store.get_operation(&operation_id)? {
+        Some(op) => {
+            let status = op["status"].as_str().unwrap_or("unknown");
+            let detail = &op["detail"];
+            let result_metadata = if status == "completed" || status == "failed" {
+                Some(detail)
+            } else {
+                None
+            };
+            Ok(Json(json!({
+                "operation_id": operation_id,
+                "status": status,
+                "operation_type": op["operation_type"],
+                "created_at": op["created_at"],
+                "updated_at": op["updated_at"],
+                "completed_at": if status == "completed" || status == "failed" { op["updated_at"].clone() } else { Value::Null },
+                "error_message": detail.get("error"),
+                "result_metadata": result_metadata,
+            })))
+        }
+        None => Ok(Json(json!({
+            "operation_id": operation_id,
+            "status": "not_found",
+        }))),
+    }
+}
+
+async fn cancel_operation(
+    State(s): State<S>,
+    Path((_bank_id, operation_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    let deleted = s.store.delete_operation(&operation_id)?;
+    Ok(Json(json!({
+        "success": deleted,
+        "message": if deleted {
+            format!("Operation {operation_id} cancelled")
+        } else {
+            format!("Operation {operation_id} not found or already running")
+        },
+        "operation_id": operation_id,
+    })))
+}
+
+async fn retry_operation(
+    State(s): State<S>,
+    Path((bank_id, operation_id)): Path<(String, String)>,
+) -> Result<Json<Value>, ApiError> {
+    // Fetch original payload and op_type
+    let op = s.store.get_operation(&operation_id)?
+        .ok_or_else(|| anyhow::anyhow!("operation not found"))?;
+    let status = op["status"].as_str().unwrap_or("");
+    if status != "failed" {
+        return Err(anyhow::anyhow!("can only retry failed operations").into());
+    }
+    let _op_type = op["operation_type"].as_str().unwrap_or("retain");
+    let payload = s.store.get_operation_payload(&operation_id)?
+        .unwrap_or(json!({}));
+    // Reset to pending
+    s.store.update_operation_status(&operation_id, "pending", None)?;
+    // Spawn background task
+    let state = Arc::clone(&s);
+    let bank = bank_id.clone();
+    let oid = operation_id.clone();
+    let items_value = payload.get("items").cloned().unwrap_or(json!([]));
+    tokio::spawn(async move {
+        let _ = state.store.update_operation_status(&oid, "running", None);
+        let items: Vec<RetainItem> = serde_json::from_value(items_value).unwrap_or_default();
+        let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
+        match result {
+            Ok(out) => {
+                let detail = json!({
+                    "facts_extracted": out.fact_count,
+                    "memory_ids": out.memory_ids,
+                });
+                let _ = state.store.update_operation_status(&oid, "completed", Some(&detail));
+            }
+            Err(e) => {
+                let detail = json!({"error": e.to_string()});
+                let _ = state.store.update_operation_status(&oid, "failed", Some(&detail));
+            }
+        }
+    });
+    Ok(Json(json!({
+        "success": true,
+        "message": format!("Operation {operation_id} queued for retry"),
+        "operation_id": operation_id,
+    })))
 }
