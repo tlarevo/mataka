@@ -2,6 +2,7 @@ mod api;
 mod chunking;
 mod engine;
 mod llm;
+mod tokens;
 mod store;
 
 use std::sync::Arc;
