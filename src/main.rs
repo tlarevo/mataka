@@ -23,7 +23,10 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let db_path = std::env::var("MATAKA_DB").unwrap_or_else(|_| "mataka-data".into());
+    let db_path = std::env::var("MATAKA_DB").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{}/.local/share/mataka", home)
+    });
     let port: u16 = std::env::var("MATAKA_PORT")
         .or_else(|_| std::env::var("HINDSIGHT_API_PORT"))
         .ok()
@@ -53,7 +56,29 @@ async fn main() -> anyhow::Result<()> {
     );
 
     let listener = tokio::net::TcpListener::bind(("0.0.0.0", port)).await?;
-    axum::serve(listener, api::router(state)).await?;
+
+    // Graceful shutdown on SIGTERM (brew services) and SIGINT (Ctrl+C)
+    let shutdown_signal = async {
+        let ctrl_c = tokio::signal::ctrl_c();
+        #[cfg(unix)]
+        let sigterm = async {
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("failed to install SIGTERM handler")
+                .recv()
+                .await;
+        };
+        #[cfg(not(unix))]
+        let sigterm = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ctrl_c => tracing::info!("received SIGINT, shutting down"),
+            _ = sigterm => tracing::info!("received SIGTERM, shutting down"),
+        }
+    };
+
+    axum::serve(listener, api::router(state))
+        .with_graceful_shutdown(shutdown_signal)
+        .await?;
     Ok(())
 }
 
@@ -83,7 +108,10 @@ async fn run_vet_subcommand(args: &[String]) -> anyhow::Result<()> {
         i += 1;
     }
 
-    let db_path = std::env::var("MATAKA_DB").unwrap_or_else(|_| "mataka-data".into());
+    let db_path = std::env::var("MATAKA_DB").unwrap_or_else(|_| {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        format!("{}/.local/share/mataka", home)
+    });
     let path = std::path::Path::new(&db_path);
     let store = if path.exists() && path.is_file() {
         store::Store::open_legacy(&db_path)?
