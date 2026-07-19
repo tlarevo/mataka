@@ -104,7 +104,7 @@ pub async fn recall(
     let semantic = {
         let conn = bank.read_conn();
         let mut stmt = conn.prepare(
-            "SELECT id, embedding FROM memory_units WHERE bank_id=?1 AND embedding IS NOT NULL",
+            "SELECT id, embedding FROM memory_units WHERE bank_id=?1 AND embedding IS NOT NULL AND quarantined_at IS NULL",
         )?;
         let mut scored: Vec<RetrievalResult> = stmt
             .query_map(params![bank_id], |r| {
@@ -142,7 +142,7 @@ pub async fn recall(
         let mut stmt = conn.prepare(
             "SELECT mu.id, bm25(memory_fts) AS s FROM memory_fts
              JOIN memory_units mu ON mu.rowid = memory_fts.rowid
-             WHERE memory_fts MATCH ?1 AND mu.bank_id = ?2 ORDER BY s LIMIT ?3",
+             WHERE memory_fts MATCH ?1 AND mu.bank_id = ?2 AND mu.quarantined_at IS NULL ORDER BY s LIMIT ?3",
         )?;
         let v: Vec<RetrievalResult> = stmt
             .query_map(params![fts_query, bank_id, n as i64], |r| {
@@ -196,7 +196,7 @@ pub async fn recall(
     let temporal = {
         let conn = bank.read_conn();
         let mut stmt = conn.prepare(
-            "SELECT id FROM memory_units WHERE bank_id=?1
+            "SELECT id FROM memory_units WHERE bank_id=?1 AND quarantined_at IS NULL
              ORDER BY COALESCE(occurred_start, created_at) DESC LIMIT ?2",
         )?;
         let v: Vec<RetrievalResult> = stmt
@@ -224,7 +224,7 @@ pub async fn recall(
     let mut token_used = 0usize;
     for cand in fused {
         let row = conn.query_row(
-            "SELECT text, fact_type, context, occurred_start, tags FROM memory_units WHERE id=?1",
+            "SELECT text, fact_type, context, occurred_start, tags FROM memory_units WHERE id=?1 AND quarantined_at IS NULL",
             params![cand.unit_id],
             |r| {
                 Ok((

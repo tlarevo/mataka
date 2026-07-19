@@ -59,6 +59,31 @@ pub async fn retain(
     metadata: &Value,
 ) -> Result<RetainOutcome> {
     store.ensure_bank(bank_id)?;
+    // ─── Stage 1: Ingress vet guard ─────────────────────────────────────
+    let vet_mode = crate::vet::VetMode::from_env();
+    let (content, context, _vet_detections) = if vet_mode != crate::vet::VetMode::Off {
+        let engine = crate::vet::VetEngine::new()?;
+        let (redacted_content, mut detections) = engine.vet_text(content, vet_mode)?;
+        // Also scan context if present
+        let redacted_context = if let Some(ctx) = context {
+            let (rc, ctx_dets) = engine.vet_text(ctx, vet_mode)?;
+            detections.extend(ctx_dets);
+            Some(rc)
+        } else {
+            None
+        };
+        if !detections.is_empty() {
+            tracing::warn!(
+                bank_id,
+                detections = detections.len(),
+                "Ingress vet: secrets redacted in retain input"
+            );
+        }
+        (redacted_content, redacted_context, detections)
+    } else {
+        (content.to_string(), context.map(|s| s.to_string()), vec![])
+    };
+    let context = context.as_deref();
 
     // Event Date for temporal resolution — injected into each chunk's user message.
     let event_date = chrono::Utc::now();
@@ -69,7 +94,7 @@ pub async fn retain(
     );
 
     // Chunk long inputs before extraction
-    let chunks = chunking::chunk_text(content, CHUNK_SIZE, CHUNK_OVERLAP);
+    let chunks = chunking::chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
     let total_chunks = chunks.len();
 
     let mut all_facts: Vec<ExtractedFact> = Vec::new();
@@ -113,7 +138,7 @@ pub async fn retain(
     // Fixture dump for Looper eval harness (THA-136)
     if let Ok(dump_dir) = std::env::var("MATAKA_DUMP_EXTRACTIONS") {
         if !dump_dir.is_empty() {
-            dump_extraction_fixtures(&dump_dir, content, &llm.model, &all_facts).ok();
+            dump_extraction_fixtures(&dump_dir, &content, &llm.model, &all_facts).ok();
         }
     }
 
