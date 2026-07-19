@@ -19,7 +19,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
-
 // ─── Per-bank schema (identical to original, minus banks table) ──────────
 
 pub const BANK_SCHEMA: &str = r#"
@@ -39,6 +38,7 @@ CREATE TABLE IF NOT EXISTS memory_units (
   metadata       TEXT NOT NULL DEFAULT '{}',
   document_id    TEXT,
   embedding      BLOB,
+  quarantined_at TEXT,
   created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_units_bank ON memory_units(bank_id, fact_type);
@@ -427,6 +427,7 @@ CREATE TABLE IF NOT EXISTS memory_units (
   metadata       TEXT NOT NULL DEFAULT '{}',
   document_id    TEXT,
   embedding      BLOB,
+  quarantined_at TEXT,
   created_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_units_bank ON memory_units(bank_id, fact_type);
@@ -968,6 +969,182 @@ impl Store {
             )
             .ok();
         Ok(row)
+    }
+}
+/// A single scannable field from a memory unit or document.
+#[derive(Debug, Clone)]
+pub struct VetScanItem {
+    pub id: String,
+    pub source: String,  // "unit" or "document"
+    pub field: String,   // "text", "context", "metadata", "content"
+    pub value: String,
+}
+
+// ─── Vet operations ──────────────────────────────────────────────────────
+
+impl Store {
+    /// Quarantine a memory unit — marks it so it's excluded from recall/reflect.
+    pub fn quarantine_unit(&self, bank_id: &str, unit_id: &str) -> Result<()> {
+        if let Some(legacy) = &self.legacy {
+            let now = chrono::Utc::now().to_rfc3339();
+            legacy.conn.lock().execute(
+                "UPDATE memory_units SET quarantined_at=?1 WHERE id=?2",
+                params![now, unit_id],
+            )?;
+            return Ok(());
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        let bank = self.get_bank(bank_id)?;
+        let conn = bank.get_write_conn();
+        conn.execute(
+            "UPDATE memory_units SET quarantined_at=?1 WHERE id=?2",
+            params![now, unit_id],
+        )?;
+        Ok(())
+    }
+
+    /// Clear quarantine flag (after successful --fix redaction).
+    pub fn unquarantine_unit(&self, bank_id: &str, unit_id: &str) -> Result<()> {
+        if let Some(legacy) = &self.legacy {
+            legacy.conn.lock().execute(
+                "UPDATE memory_units SET quarantined_at=NULL WHERE id=?1",
+                params![unit_id],
+            )?;
+            return Ok(());
+        }
+        let bank = self.get_bank(bank_id)?;
+        let conn = bank.get_write_conn();
+        conn.execute(
+            "UPDATE memory_units SET quarantined_at=NULL WHERE id=?1",
+            params![unit_id],
+        )?;
+        Ok(())
+    }
+
+    /// Redact text + re-embed + update in a single transaction (4-copy atomic).
+    /// Returns the redacted text and new embedding for verification.
+    pub fn redact_unit(
+        &self,
+        bank_id: &str,
+        unit_id: &str,
+        new_text: &str,
+        new_embedding: &[f32],
+    ) -> Result<()> {
+        if let Some(legacy) = &self.legacy {
+            let blob = crate::store::f32s_to_blob(new_embedding);
+            legacy.conn.lock().execute(
+                "UPDATE memory_units SET text=?1, embedding=?2 WHERE id=?3",
+                params![new_text, blob, unit_id],
+            )?;
+            // FTS is updated by the units_au trigger on text UPDATE
+            return Ok(());
+        }
+        let bank = self.get_bank(bank_id)?;
+        let conn = bank.get_write_conn();
+        let blob = crate::store::f32s_to_blob(new_embedding);
+        // Single transaction: text + embedding + FTS (trigger) + history (future)
+        conn.execute_batch("BEGIN")?;
+        let result = conn.execute(
+            "UPDATE memory_units SET text=?1, embedding=?2, quarantined_at=NULL WHERE id=?3",
+            params![new_text, blob, unit_id],
+        );
+        match result {
+            Ok(_) => {
+                conn.execute_batch("COMMIT")?;
+                Ok(())
+            }
+            Err(e) => {
+                conn.execute_batch("ROLLBACK")?;
+                Err(e.into())
+            }
+        }
+    }
+
+    /// Scan all memory units for a bank, returning (unit_id, text) pairs.
+    /// Used by the at-rest scanner.
+    pub fn scan_units_for_vet(&self, bank_id: &str) -> Result<Vec<VetScanItem>> {
+        let mut items = Vec::new();
+        if let Some(legacy) = &self.legacy {
+            let conn = legacy.conn.lock();
+            // Scan memory_units: text, context, metadata
+            let mut stmt = conn.prepare(
+                "SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1",
+            )?;
+            for row in stmt.query_map(params![bank_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?.filter_map(|r| r.ok()) {
+                let (id, text, context, metadata) = row;
+                items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "text".into(), value: text.unwrap_or_default() });
+                if let Some(ctx) = context { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "context".into(), value: ctx }); }
+                if let Some(meta) = metadata { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "metadata".into(), value: meta }); }
+            }
+            // Scan documents: content
+            let mut stmt = conn.prepare(
+                "SELECT id, content FROM documents WHERE bank_id=?1",
+            )?;
+            for row in stmt.query_map(params![bank_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?.filter_map(|r| r.ok()) {
+                if let Some(content) = row.1 {
+                    items.push(VetScanItem { id: row.0, source: "document".into(), field: "content".into(), value: content });
+                }
+            }
+            return Ok(items);
+        }
+        let bank = self.get_bank(bank_id)?;
+        let conn = bank.read_conn();
+        // Scan memory_units: text, context, metadata
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1",
+            )?;
+            for row in stmt.query_map(params![bank_id], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, Option<String>>(3)?,
+                ))
+            })?.filter_map(|r| r.ok()) {
+                let (id, text, context, metadata) = row;
+                items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "text".into(), value: text.unwrap_or_default() });
+                if let Some(ctx) = context { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "context".into(), value: ctx }); }
+                if let Some(meta) = metadata { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "metadata".into(), value: meta }); }
+            }
+        }
+        // Scan documents: content
+        {
+            let mut stmt = conn.prepare(
+                "SELECT id, content FROM documents WHERE bank_id=?1",
+            )?;
+            for row in stmt.query_map(params![bank_id], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            })?.filter_map(|r| r.ok()) {
+                if let Some(content) = row.1 {
+                    items.push(VetScanItem { id: row.0, source: "document".into(), field: "content".into(), value: content });
+                }
+            }
+        }
+        Ok(items)
+    }
+
+    /// List all bank ids (from registry).
+    pub fn list_bank_ids(&self) -> Result<Vec<String>> {
+        if self.legacy.is_some() {
+            return Ok(vec![]);
+        }
+        let conn = self.registry_conn.lock();
+        let mut stmt = conn.prepare("SELECT bank_id FROM banks ORDER BY created_at")?;
+        let ids = stmt
+            .query_map([], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(ids)
     }
 }
 

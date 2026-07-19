@@ -20,6 +20,8 @@ thiserror = "1"
 tracing = "0.1"
 tiktoken-rs = "0.12"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+toml = "0.8"
+regex = "1"
 
 [dev-dependencies]
 tempfile = "3"

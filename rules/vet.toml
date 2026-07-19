@@ -1,0 +1,84 @@
+# mataka vet rule definitions — ported from gitleaks/ripsecrets (MPL-2.0 / MIT).
+# Rule ids are stable across versions; new rules are appended, never renamed.
+# Include via: include_str!("../rules/vet.toml")
+
+version = 1
+
+[[rules]]
+id = "aws_access_key"
+description = "AWS Access Key ID"
+pattern = 'AKIA[0-9A-Z]{16}'
+placeholder = "{{REDACTED:aws_access_key}}"
+
+[[rules]]
+id = "aws_secret_key"
+description = "AWS Secret Access Key (standalone or in env assignment)"
+# Matches KEY=secret pairs and standalone high-entropy tokens preceded by secret-like labels
+pattern = '(?:SECRET_ACCESS_KEY|AWS_SECRET)["\s:=]+[A-Za-z0-9/+=]{40}'
+placeholder = "{{REDACTED:aws_secret_key}}"
+
+[[rules]]
+id = "github_token"
+description = "GitHub personal access token (fine-grained or classic)"
+pattern = 'gh[ps]_[A-Za-z0-9_]{36,255}'
+placeholder = "{{REDACTED:github_token}}"
+
+[[rules]]
+id = "github_oauth"
+description = "GitHub OAuth access token"
+pattern = 'gho_[A-Za-z0-9_]{36,255}'
+placeholder = "{{REDACTED:github_oauth}}"
+
+[[rules]]
+id = "github_app_token"
+description = "GitHub App token"
+pattern = 'ghs_[A-Za-z0-9_]{36,255}'
+placeholder = "{{REDACTED:github_app_token}}"
+
+[[rules]]
+id = "openai_key"
+description = "OpenAI API key"
+pattern = 'sk-[A-Za-z0-9]{20}T3BlbkFJ[A-Za-z0-9]{20}'
+placeholder = "{{REDACTED:openai_key}}"
+
+[[rules]]
+id = "openai_key_short"
+description = "OpenAI API key (sk-proj- format)"
+pattern = 'sk-proj-[A-Za-z0-9_-]{20,}'
+placeholder = "{{REDACTED:openai_key}}"
+
+[[rules]]
+id = "anthropic_key"
+description = "Anthropic API key"
+pattern = 'sk-ant-[A-Za-z0-9_-]{20,}'
+placeholder = "{{REDACTED:anthropic_key}}"
+
+[[rules]]
+id = "slack_token"
+description = "Slack bot/user/webhook token"
+pattern = 'xox[bpsar]-[0-9]{10,13}-[0-9a-zA-Z-]{20,}'
+placeholder = "{{REDACTED:slack_token}}"
+
+[[rules]]
+id = "jwt"
+description = "JSON Web Token"
+pattern = 'eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]+'
+placeholder = "{{REDACTED:jwt}}"
+
+[[rules]]
+id = "private_key_block"
+description = "PEM private key block"
+pattern = '-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----'
+placeholder = "{{REDACTED:private_key}}"
+
+[[rules]]
+id = "connection_string"
+description = "Database/service connection string with embedded credentials"
+pattern = '(?:postgres|mysql|mongodb|redis|amqp)://[^:\s]+:[^@\s]+@[^\s]+'
+placeholder = "{{REDACTED:connection_string}}"
+
+[[rules]]
+id = "env_secret_assignment"
+description = "Environment variable assignment with secret-like key name"
+pattern = '(?:API_KEY|SECRET|TOKEN|PASSWORD|CREDENTIALS|AUTH)["\s:=]+[^\s]{8,}'
+placeholder = "{{REDACTED:env_secret}}"

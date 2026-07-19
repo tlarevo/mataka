@@ -53,6 +53,7 @@ pub fn router(state: S) -> Router {
             "/v1/default/banks/:bank_id/memories/:memory_id",
             get(get_memory).delete(delete_memory),
         )
+        .route("/v1/default/banks/:bank_id/vet", post(vet_bank))
         .route("/v1/default/banks/:bank_id/reflect", post(reflect_bank))
         .route(
             "/v1/default/banks/:bank_id/consolidate",
@@ -615,5 +616,83 @@ async fn retry_operation(
         "success": true,
         "message": format!("Operation {operation_id} queued for retry"),
         "operation_id": operation_id,
+    })))
+}
+
+// ---------- vet ----------
+
+#[derive(Deserialize)]
+struct VetRequest {
+    #[serde(default)]
+    fix: bool,
+}
+
+async fn vet_bank(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+    Json(req): Json<VetRequest>,
+) -> Result<Json<Value>, ApiError> {
+    let engine = crate::vet::VetEngine::new()?;
+    let items = s.store.scan_units_for_vet(&bank_id)?;
+    let mut findings: Vec<serde_json::Value> = Vec::new();
+    let mut fixed_count = 0u64;
+
+    for item in &items {
+        let result = engine.scan(&item.value);
+        if result.detections.is_empty() {
+            continue;
+        }
+        // Report rule_id + location only — never the secret itself
+        for det in &result.detections {
+            findings.push(json!({
+                "rule_id": det.rule_id,
+                "count": det.count,
+                "source": item.source,
+                "field": item.field,
+                "unit_id": item.id,
+            }));
+        }
+
+        if req.fix {
+            let (redacted, _) = engine.vet_text(&item.value, crate::vet::VetMode::Redact)?;
+            match item.field.as_str() {
+                "text" => {
+                    // Redact text + re-embed atomically
+                    let emb = s.llm.embed(std::slice::from_ref(&redacted)).await?;
+                    s.store.redact_unit(&bank_id, &item.id, &redacted, &emb[0])?;
+                }
+                "context" | "metadata" => {
+                    // Update the specific column directly
+                    s.store.quarantine_unit(&bank_id, &item.id)?;
+                    let bank = s.store.get_bank(&bank_id)?;
+                    let conn = bank.get_write_conn();
+                    let sql = format!(
+                        "UPDATE memory_units SET {}=?1 WHERE id=?2",
+                        item.field
+                    );
+                    conn.execute(&sql, rusqlite::params![redacted, item.id])?;
+                    s.store.unquarantine_unit(&bank_id, &item.id)?;
+                }
+                "content" => {
+                    // Document content — update documents table
+                    let bank = s.store.get_bank(&bank_id)?;
+                    let conn = bank.get_write_conn();
+                    conn.execute(
+                        "UPDATE documents SET content=?1 WHERE id=?2",
+                        rusqlite::params![redacted, item.id],
+                    )?;
+                }
+                _ => {}
+            }
+            fixed_count += 1;
+        }
+    }
+
+    Ok(Json(json!({
+        "success": true,
+        "bank_id": bank_id,
+        "findings_count": findings.len(),
+        "findings": findings,
+        "fixed": fixed_count,
     })))
 }
