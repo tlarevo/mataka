@@ -90,6 +90,7 @@ pub async fn recall(
     max_tokens: usize,
     filter_tags: &[String],
     tags_match: &str,
+    prefer_observations: bool,
 ) -> Result<Vec<RecallResult>> {
     let n = Budget::candidates(budget);
     let type_filter: Vec<String> = if types.is_empty() {
@@ -219,6 +220,37 @@ pub async fn recall(
         cap_per_source(temporal, n),
     ]);
 
+    // --- prefer_observations: collect source IDs from observations in results ---
+    let suppressed_sources: std::collections::HashSet<String> = if prefer_observations {
+        let conn2 = bank.read_conn();
+        let mut sources = std::collections::HashSet::new();
+        for cand in &fused {
+            let ft: String = conn2
+                .query_row(
+                    "SELECT fact_type FROM memory_units WHERE id=?1",
+                    params![cand.unit_id],
+                    |r| r.get(0),
+                )
+                .unwrap_or_default();
+            if ft == "observation" {
+                let mut stmt = conn2
+                    .prepare("SELECT source_unit_id FROM observation_sources WHERE observation_id=?1")
+                    .unwrap();
+                let ids: Vec<String> = stmt
+                    .query_map(params![cand.unit_id], |r| r.get(0))
+                    .unwrap()
+                    .filter_map(|r| r.ok())
+                    .collect();
+                for id in ids {
+                    sources.insert(id);
+                }
+            }
+        }
+        sources
+    } else {
+        std::collections::HashSet::new()
+    };
+
     let conn = bank.read_conn();
     let mut results = Vec::new();
     let mut token_used = 0usize;
@@ -240,6 +272,10 @@ pub async fn recall(
             continue;
         };
         if !type_filter.contains(&ft) {
+            continue;
+        }
+        // Suppress source facts when prefer_observations is active
+        if prefer_observations && (ft == "world" || ft == "experience") && suppressed_sources.contains(&cand.unit_id) {
             continue;
         }
         // Apply tag filter

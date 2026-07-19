@@ -9,7 +9,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Json, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Router,
 };
 use rusqlite::params;
@@ -54,6 +54,14 @@ pub fn router(state: S) -> Router {
             get(get_memory).delete(delete_memory),
         )
         .route("/v1/default/banks/:bank_id/reflect", post(reflect_bank))
+        .route(
+            "/v1/default/banks/:bank_id/consolidate",
+            post(consolidate_bank),
+        )
+        .route(
+            "/v1/default/banks/:bank_id/observations",
+            delete(delete_observations),
+        )
         .route("/v1/default/banks/:bank_id/entities", get(list_entities))
         .route(
             "/v1/default/banks/:bank_id/operations",
@@ -186,6 +194,12 @@ async fn retain_memories(
                         "memory_ids": out.memory_ids,
                     });
                     let _ = state.store.update_operation_status(&bank, &oid, "completed", Some(&detail));
+                    // Chain consolidation as follow-on (THA-128)
+                    let store2 = &state.store;
+                    let llm2 = &state.llm;
+                    if let Err(e) = engine::consolidate::consolidate(store2, llm2, &bank).await {
+                        tracing::warn!("consolidation follow-on failed: {e}");
+                    }
                 }
                 Err(e) => {
                     let detail = json!({"error": e.to_string()});
@@ -269,6 +283,8 @@ struct RecallRequest {
     tags_match: String,
     #[serde(default)]
     tag_groups: Option<serde_json::Value>,
+    #[serde(default)]
+    prefer_observations: bool,
 }
 fn default_tags_match() -> String {
     "any".into()
@@ -279,7 +295,6 @@ fn default_budget() -> String {
 fn default_max_tokens() -> usize {
     4096
 }
-
 async fn recall_memories(
     State(s): State<S>,
     Path(bank_id): Path<String>,
@@ -299,6 +314,7 @@ async fn recall_memories(
         req.max_tokens,
         &tags,
         &req.tags_match,
+        req.prefer_observations,
     )
     .await?;
     Ok(Json(json!({"results": results})))
@@ -324,6 +340,29 @@ async fn reflect_bank(
     let text = engine::reflect(&s.store, &s.llm, &bank_id, &req.query, &req.budget).await?;
     Ok(Json(json!({"text": text, "bank_id": bank_id})))
 }
+// ---------- consolidate ----------
+
+async fn consolidate_bank(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let result = engine::consolidate::consolidate(&s.store, &s.llm, &bank_id).await?;
+    Ok(Json(json!({
+        "success": true,
+        "bank_id": bank_id,
+        "observations_created": result.observations_created,
+        "observation_ids": result.observation_ids,
+    })))
+}
+
+async fn delete_observations(
+    State(s): State<S>,
+    Path(bank_id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let n = engine::consolidate::delete_observations(&s.store, &bank_id)?;
+    Ok(Json(json!({"deleted": n})))
+}
+
 
 // ---------- memories CRUD ----------
 

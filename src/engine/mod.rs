@@ -1,3 +1,4 @@
+pub mod consolidate;
 pub mod fusion;
 pub mod recall;
 pub mod retain;
@@ -27,6 +28,7 @@ pub async fn reflect(
         2048,
         &[],
         "any",
+        false,
     )
     .await?;
 

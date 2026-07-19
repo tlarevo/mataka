@@ -91,6 +91,13 @@ CREATE TABLE IF NOT EXISTS operations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS observation_sources (
+  observation_id TEXT NOT NULL REFERENCES memory_units(id) ON DELETE CASCADE,
+  source_unit_id TEXT NOT NULL REFERENCES memory_units(id) ON DELETE CASCADE,
+  PRIMARY KEY (observation_id, source_unit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_os_source ON observation_sources(source_unit_id);
 "#;
 
 // ─── Legacy single-file Store (backward compat for :memory: / single .db) ──
@@ -472,6 +479,13 @@ CREATE TABLE IF NOT EXISTS operations (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS observation_sources (
+  observation_id TEXT NOT NULL REFERENCES memory_units(id) ON DELETE CASCADE,
+  source_unit_id TEXT NOT NULL REFERENCES memory_units(id) ON DELETE CASCADE,
+  PRIMARY KEY (observation_id, source_unit_id)
+);
+CREATE INDEX IF NOT EXISTS idx_os_source ON observation_sources(source_unit_id);
 "#;
 
 // ─── Per-bank database ──────────────────────────────────────────────────
