@@ -5,3 +5,9 @@
 mataka-data/
 /models
 upstream/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+harness/.venv/
+harness/uv.lock

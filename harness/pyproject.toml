@@ -1,0 +1,13 @@
+[project]
+name = "mataka-diff-harness"
+version = "0.1.0"
+description = "Differential test harness: mataka vs Hindsight docker"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.27",
+    "jsonschema>=4.23",
+    "psutil>=6.1",
+]
+
+[project.scripts]
+diff-harness = "run_diff:main"
