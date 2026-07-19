@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::sync::Mutex;
 
 pub struct Store {
@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS operations (
   op_type    TEXT NOT NULL,          -- retain | consolidate | refresh
   status     TEXT NOT NULL,          -- pending | running | completed | failed
   detail     TEXT DEFAULT '{}',
+  payload    TEXT DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -127,6 +128,15 @@ impl Store {
     pub fn open(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch(SCHEMA)?;
+        // Migrate: add payload column if missing (guarded)
+        let has_payload: bool = conn
+            .prepare("PRAGMA table_info(operations)")?
+            .query_map([], |row| row.get::<_, String>(1))? // column name at index 1
+            .filter_map(|r| r.ok())
+            .any(|name| name == "payload");
+        if !has_payload {
+            conn.execute_batch("ALTER TABLE operations ADD COLUMN payload TEXT DEFAULT '{}'")?;
+        }
         Ok(Self {
             conn: Mutex::new(conn),
         })
@@ -179,4 +189,167 @@ impl Store {
             "documents": count("SELECT COUNT(*) FROM documents WHERE bank_id=?1"),
         }))
     }
+    // ---- operations ----
+
+    pub fn create_operation(
+        &self,
+        bank_id: &str,
+        op_type: &str,
+        payload: &Value,
+    ) -> Result<String> {
+        let id = uuid::Uuid::new_v4().to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO operations(id, bank_id, op_type, status, detail, payload, created_at, updated_at)
+             VALUES (?1, ?2, ?3, 'pending', '{}', ?4, ?5, ?5)",
+            params![id, bank_id, op_type, payload.to_string(), now],
+        )?;
+        Ok(id)
+    }
+
+    pub fn update_operation_status(
+        &self,
+        operation_id: &str,
+        status: &str,
+        detail: Option<&Value>,
+    ) -> Result<()> {
+        let now = chrono::Utc::now().to_rfc3339();
+        let conn = self.conn.lock().unwrap();
+        if let Some(d) = detail {
+            conn.execute(
+                "UPDATE operations SET status=?1, detail=?2, updated_at=?3 WHERE id=?4",
+                params![status, d.to_string(), now, operation_id],
+            )?;
+        } else {
+            conn.execute(
+                "UPDATE operations SET status=?1, updated_at=?2 WHERE id=?3",
+                params![status, now, operation_id],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn get_operation(&self, operation_id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT id, bank_id, op_type, status, detail, payload, created_at, updated_at
+                 FROM operations WHERE id=?1",
+                params![operation_id],
+                |r| {
+                    let id: String = r.get(0)?;
+                    let bank_id: String = r.get(1)?;
+                    let op_type: String = r.get(2)?;
+                    let status: String = r.get(3)?;
+                    let detail: String = r.get(4)?;
+                    let payload: String = r.get(5)?;
+                    let created_at: String = r.get(6)?;
+                    let updated_at: String = r.get(7)?;
+                    Ok(json!({
+                        "operation_id": id,
+                        "bank_id": bank_id,
+                        "operation_type": op_type,
+                        "status": status,
+                        "detail": serde_json::from_str::<Value>(&detail).unwrap_or(json!({})),
+                        "payload": serde_json::from_str::<Value>(&payload).unwrap_or(json!({})),
+                        "created_at": created_at,
+                        "updated_at": updated_at,
+                    }))
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
+    pub fn list_operations(
+        &self,
+        bank_id: &str,
+        status: Option<&str>,
+        op_type: Option<&str>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Value>, i64)> {
+        let conn = self.conn.lock().unwrap();
+        let mut where_clauses = vec!["bank_id = ?1".to_string()];
+        let mut param_values: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(bank_id.to_string())];
+        if let Some(s) = status {
+            let idx = param_values.len() + 1;
+            where_clauses.push(format!("status = ?{idx}"));
+            param_values.push(Box::new(s.to_string()));
+        }
+        if let Some(t) = op_type {
+            let idx = param_values.len() + 1;
+            where_clauses.push(format!("op_type = ?{idx}"));
+            param_values.push(Box::new(t.to_string()));
+        }
+        let where_sql = where_clauses.join(" AND ");
+        let count_sql = format!("SELECT COUNT(*) FROM operations WHERE {where_sql}");
+        let total: i64 = {
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                param_values.iter().map(|p| p.as_ref()).collect();
+            conn.query_row(&count_sql, params_refs.as_slice(), |r| r.get(0))?
+        };
+        let query_sql = format!(
+            "SELECT id, bank_id, op_type, status, detail, created_at, updated_at
+             FROM operations WHERE {where_sql}
+             ORDER BY created_at DESC LIMIT ?{0} OFFSET ?{1}",
+            param_values.len() + 1,
+            param_values.len() + 2,
+        );
+        param_values.push(Box::new(limit));
+        param_values.push(Box::new(offset));
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            param_values.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&query_sql)?;
+        let rows = stmt
+            .query_map(params_refs.as_slice(), |r| {
+                let id: String = r.get(0)?;
+                let _bank_id: String = r.get(1)?;
+                let op_type: String = r.get(2)?;
+                let status: String = r.get(3)?;
+                let _detail: String = r.get(4)?;
+                let created_at: String = r.get(5)?;
+                let updated_at: String = r.get(6)?;
+                Ok(json!({
+                    "id": id,
+                    "task_type": op_type,
+                    "items_count": 0,
+                    "document_id": null,
+                    "filename": null,
+                    "created_at": created_at,
+                    "updated_at": updated_at,
+                    "status": status,
+                    "error_message": null,
+                }))
+            })?
+            .filter_map(|r| r.ok())
+            .collect::<Vec<_>>();
+        Ok((rows, total))
+    }
+
+    pub fn delete_operation(&self, operation_id: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let affected = conn.execute(
+            "DELETE FROM operations WHERE id=?1 AND status NOT IN ('running')",
+            params![operation_id],
+        )?;
+        Ok(affected > 0)
+    }
+
+    pub fn get_operation_payload(&self, operation_id: &str) -> Result<Option<Value>> {
+        let conn = self.conn.lock().unwrap();
+        let row = conn
+            .query_row(
+                "SELECT payload FROM operations WHERE id=?1",
+                params![operation_id],
+                |r| {
+                    let payload: String = r.get(0)?;
+                    Ok(serde_json::from_str::<Value>(&payload).unwrap_or(json!({})))
+                },
+            )
+            .ok();
+        Ok(row)
+    }
+
 }
