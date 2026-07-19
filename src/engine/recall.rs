@@ -171,6 +171,7 @@ pub async fn recall(
         let sql = format!(
             "SELECT ue2.unit_id, COUNT(*) AS overlap FROM unit_entities ue1
              JOIN unit_entities ue2 ON ue1.entity_id = ue2.entity_id
+             JOIN memory_units mu ON mu.id = ue2.unit_id AND mu.quarantined_at IS NULL
              WHERE ue1.unit_id IN ({placeholders}) AND ue2.unit_id NOT IN ({placeholders})
              GROUP BY ue2.unit_id ORDER BY overlap DESC LIMIT {n}"
         );
