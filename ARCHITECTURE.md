@@ -1,4 +1,86 @@
 # mataka — Architecture & Upstream Analysis
+## Architecture overview
+
+```mermaid
+graph TB
+    subgraph "Client Layer"
+        SDK["Hindsight SDKs<br/>(py/ts/go/rust)"]
+        OMP["omp / CLI tools"]
+    end
+
+    subgraph "HTTP API (axum)"
+        Router["Router"]
+        Banks["Banks CRUD"]
+        Retain["POST /memories<br/>(retain)"]
+        Recall["POST /memories/recall"]
+        Reflect["POST /reflect"]
+        Vet["POST /vet<br/>CLI: mataka vet"]
+        Ops["Operations"]
+        Consolidate["POST /consolidate"]
+    end
+
+    subgraph "Engine"
+        Extraction["Fact Extraction<br/>(LLM + prompts)"]
+        Chunking["Chunking<br/>(recursive splitter)"]
+        Embed["Embedding<br/>(OpenAI-compatible)"]
+        Fusion["4-Arm RRF Fusion<br/>(semantic+BM25+entity+temporal)"]
+        Vetting["Vet Engine<br/>(regex + entropy)"]
+        Consolidation["Consolidation<br/>(LLM dedup)"]
+    end
+
+    subgraph "Storage (SQLite per bank)"
+        BankDb[("BankDb<br/>(one .db per bank)")]
+        ReadPool["Read Pool<br/>(4 conns)"]
+        WriteConn["Write Conn<br/>(Mutex)"]
+        FTS5["FTS5<br/>(bm25)"]
+        Embeddings["f32 BLOB<br/>(cosine scan)"]
+        Registry[("Registry DB<br/>(banks list)")]
+    end
+
+    subgraph "LLM Provider"
+        OpenAI["OpenAI-compatible<br/>(Ollama/LM Studio/remote)"]
+    end
+
+    SDK --> Router
+    OMP --> Router
+    Router --> Banks
+    Router --> Retain
+    Router --> Recall
+    Router --> Reflect
+    Router --> Vet
+    Router --> Ops
+    Router --> Consolidate
+
+    Retain --> Chunking
+    Chunking --> Extraction
+    Extraction --> Embed
+    Embed --> BankDb
+    Embed --> OpenAI
+    Extraction --> OpenAI
+
+    Recall --> Fusion
+    Fusion --> ReadPool
+    Fusion --> FTS5
+    Fusion --> Embeddings
+
+    Vet --> Vetting
+    Vetting --> WriteConn
+
+    Consolidate --> Consolidation
+    Consolidation --> OpenAI
+    Consolidation --> WriteConn
+
+    BankDb --> ReadPool
+    BankDb --> WriteConn
+    Banks --> Registry
+```
+
+**Data flow:**
+
+1. **Retain**: Client → axum → vetting (ingress guard) → chunking → LLM extraction → embedding → BankDb (facts + FTS trigger + entity upsert) → async consolidation
+2. **Recall**: Client → axum → 4-arm search (semantic cosine + BM25 FTS5 + entity co-occurrence + temporal) → RRF fusion → budget packing (tiktoken) → response
+3. **Vet**: CLI/API → scan BankDb text/context/metadata → regex + entropy detection → quarantine or redact (4-copy: text + embed + FTS + history)
+
 
 ## Why Hindsight is heavy in local mode
 
