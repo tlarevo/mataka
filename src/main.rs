@@ -1,4 +1,5 @@
 mod api;
+mod chunking;
 mod engine;
 mod llm;
 mod store;

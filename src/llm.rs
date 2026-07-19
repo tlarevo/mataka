@@ -145,7 +145,7 @@ fn mock_chat(system: &str, user: &str) -> String {
                     .map(|w| w.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
                     .filter(|w| !w.is_empty())
                     .collect();
-                json!({"text": s, "fact_type": "world", "entities": entities, "occurred_start": null})
+                json!({"text": s, "fact_type": "world", "entities": entities, "occurred_start": null, "occurred_end": null})
             })
             .collect();
         json!({ "facts": facts }).to_string()
