@@ -56,7 +56,7 @@ jobs:
       - name: Build
         run: cargo build
 
-      - name: Start server
+      - name: Start server + smoke flow
         run: |
           ./target/debug/mataka &
           MATAKA_PID=$!
@@ -68,8 +68,8 @@ jobs:
             fi
             sleep 0.5
           done
-          # Cleanup on exit
-          trap "kill $MATAKA_PID 2>/dev/null || true" EXIT
-
-      - name: Run smoke flow
-        run: bash scripts/smoke.sh
+          # Run smoke flow
+          bash scripts/smoke.sh
+          EXIT=$?
+          kill $MATAKA_PID 2>/dev/null || true
+          exit $EXIT
