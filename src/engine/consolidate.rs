@@ -169,9 +169,8 @@ fn observation_exists_with_sources(
     let conn = bank.read_conn();
 
     // Get all existing observation IDs for this bank
-    let mut stmt = conn.prepare(
-        "SELECT id FROM memory_units WHERE bank_id=?1 AND fact_type='observation'",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT id FROM memory_units WHERE bank_id=?1 AND fact_type='observation'")?;
     let obs_ids: Vec<String> = stmt
         .query_map(params![bank_id], |r| r.get(0))?
         .filter_map(|r| r.ok())
@@ -196,9 +195,8 @@ fn observation_exists_with_sources(
             continue;
         }
         // Count matches — verify set equality via sorted comparison
-        let mut stmt2 = conn.prepare(
-            "SELECT source_unit_id FROM observation_sources WHERE observation_id=?1",
-        )?;
+        let mut stmt2 =
+            conn.prepare("SELECT source_unit_id FROM observation_sources WHERE observation_id=?1")?;
         let existing: Vec<String> = stmt2
             .query_map(params![obs_id], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -222,8 +220,7 @@ async fn consolidate_group(
     candidates: &[FactCandidate],
     group_indices: &[usize],
 ) -> Result<Option<String>> {
-    let group_facts: Vec<&FactCandidate> =
-        group_indices.iter().map(|&i| &candidates[i]).collect();
+    let group_facts: Vec<&FactCandidate> = group_indices.iter().map(|&i| &candidates[i]).collect();
 
     // Build user message with fact list
     let facts_json: Vec<serde_json::Value> = group_facts
@@ -253,7 +250,9 @@ async fn consolidate_group(
     }
 
     // Embed the observation
-    let embeddings = llm.embed(std::slice::from_ref(&result.observation_text)).await?;
+    let embeddings = llm
+        .embed(std::slice::from_ref(&result.observation_text))
+        .await?;
     let emb = embeddings.into_iter().next().unwrap_or_default();
 
     // Insert observation as memory_units row
@@ -397,7 +396,11 @@ mod tests {
         insert_fact(&store, bank, "f2", "Alice likes hiking trails");
 
         assert_eq!(
-            count_rows(&store, bank, "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"),
+            count_rows(
+                &store,
+                bank,
+                "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"
+            ),
             2
         );
 
@@ -434,7 +437,11 @@ mod tests {
         );
         // Original facts still exist (supplement, not replace)
         assert_eq!(
-            count_rows(&store, bank, "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"),
+            count_rows(
+                &store,
+                bank,
+                "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"
+            ),
             2
         );
     }
@@ -515,7 +522,11 @@ mod tests {
 
         // No observations left
         assert_eq!(
-            count_rows(&store, bank, "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='observation'"),
+            count_rows(
+                &store,
+                bank,
+                "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='observation'"
+            ),
             0
         );
         // No provenance left
@@ -525,7 +536,11 @@ mod tests {
         );
         // Original facts still intact
         assert_eq!(
-            count_rows(&store, bank, "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"),
+            count_rows(
+                &store,
+                bank,
+                "SELECT COUNT(*) FROM memory_units WHERE bank_id=?1 AND fact_type='world'"
+            ),
             2
         );
     }

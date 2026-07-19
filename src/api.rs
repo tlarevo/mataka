@@ -181,12 +181,16 @@ async fn retain_memories(
     let items_count = items.len();
     if req.run_async {
         // Create operation row, spawn background task, return 202
-        let op_id = s.store.create_operation(&bank_id, "retain", &json!({"items": items}))?;
+        let op_id = s
+            .store
+            .create_operation(&bank_id, "retain", &json!({"items": items}))?;
         let state = Arc::clone(&s);
         let bank = bank_id.clone();
         let oid = op_id.clone();
         tokio::spawn(async move {
-            let _ = state.store.update_operation_status(&bank, &oid, "running", None);
+            let _ = state
+                .store
+                .update_operation_status(&bank, &oid, "running", None);
             let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
             match result {
                 Ok(out) => {
@@ -194,7 +198,12 @@ async fn retain_memories(
                         "facts_extracted": out.fact_count,
                         "memory_ids": out.memory_ids,
                     });
-                    let _ = state.store.update_operation_status(&bank, &oid, "completed", Some(&detail));
+                    let _ = state.store.update_operation_status(
+                        &bank,
+                        &oid,
+                        "completed",
+                        Some(&detail),
+                    );
                     // Chain consolidation as follow-on (THA-128)
                     let store2 = &state.store;
                     let llm2 = &state.llm;
@@ -204,7 +213,10 @@ async fn retain_memories(
                 }
                 Err(e) => {
                     let detail = json!({"error": e.to_string()});
-                    let _ = state.store.update_operation_status(&bank, &oid, "failed", Some(&detail));
+                    let _ =
+                        state
+                            .store
+                            .update_operation_status(&bank, &oid, "failed", Some(&detail));
                 }
             }
         });
@@ -302,7 +314,9 @@ async fn recall_memories(
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<Value>, ApiError> {
     if req.tag_groups.is_some() {
-        return Err(ApiError(anyhow::anyhow!("tag_groups not implemented (501)")));
+        return Err(ApiError(anyhow::anyhow!(
+            "tag_groups not implemented (501)"
+        )));
     }
     let tags = req.tags.unwrap_or_default();
     let results = engine::recall::recall(
@@ -363,7 +377,6 @@ async fn delete_observations(
     let n = engine::consolidate::delete_observations(&s.store, &bank_id)?;
     Ok(Json(json!({"deleted": n})))
 }
-
 
 // ---------- memories CRUD ----------
 
@@ -578,24 +591,31 @@ async fn retry_operation(
     Path((bank_id, operation_id)): Path<(String, String)>,
 ) -> Result<Json<Value>, ApiError> {
     // Fetch original payload and op_type
-    let op = s.store.get_operation(&bank_id, &operation_id)?
+    let op = s
+        .store
+        .get_operation(&bank_id, &operation_id)?
         .ok_or_else(|| anyhow::anyhow!("operation not found"))?;
     let status = op["status"].as_str().unwrap_or("");
     if status != "failed" {
         return Err(anyhow::anyhow!("can only retry failed operations").into());
     }
     let _op_type = op["operation_type"].as_str().unwrap_or("retain");
-    let payload = s.store.get_operation_payload(&bank_id, &operation_id)?
+    let payload = s
+        .store
+        .get_operation_payload(&bank_id, &operation_id)?
         .unwrap_or(json!({}));
     // Reset to pending
-    s.store.update_operation_status(&bank_id, &operation_id, "pending", None)?;
+    s.store
+        .update_operation_status(&bank_id, &operation_id, "pending", None)?;
     // Spawn background task
     let state = Arc::clone(&s);
     let bank = bank_id.clone();
     let oid = operation_id.clone();
     let items_value = payload.get("items").cloned().unwrap_or(json!([]));
     tokio::spawn(async move {
-        let _ = state.store.update_operation_status(&bank, &oid, "running", None);
+        let _ = state
+            .store
+            .update_operation_status(&bank, &oid, "running", None);
         let items: Vec<RetainItem> = serde_json::from_value(items_value).unwrap_or_default();
         let result = run_retain_background(&state.store, &state.llm, &bank, &items).await;
         match result {
@@ -604,11 +624,16 @@ async fn retry_operation(
                     "facts_extracted": out.fact_count,
                     "memory_ids": out.memory_ids,
                 });
-                let _ = state.store.update_operation_status(&bank, &oid, "completed", Some(&detail));
+                let _ =
+                    state
+                        .store
+                        .update_operation_status(&bank, &oid, "completed", Some(&detail));
             }
             Err(e) => {
                 let detail = json!({"error": e.to_string()});
-                let _ = state.store.update_operation_status(&bank, &oid, "failed", Some(&detail));
+                let _ = state
+                    .store
+                    .update_operation_status(&bank, &oid, "failed", Some(&detail));
             }
         }
     });
@@ -659,17 +684,15 @@ async fn vet_bank(
                 "text" => {
                     // Redact text + re-embed atomically
                     let emb = s.llm.embed(std::slice::from_ref(&redacted)).await?;
-                    s.store.redact_unit(&bank_id, &item.id, &redacted, &emb[0])?;
+                    s.store
+                        .redact_unit(&bank_id, &item.id, &redacted, &emb[0])?;
                 }
                 "context" | "metadata" => {
                     // Update the specific column directly
                     s.store.quarantine_unit(&bank_id, &item.id)?;
                     let bank = s.store.get_bank(&bank_id)?;
                     let conn = bank.get_write_conn();
-                    let sql = format!(
-                        "UPDATE memory_units SET {}=?1 WHERE id=?2",
-                        item.field
-                    );
+                    let sql = format!("UPDATE memory_units SET {}=?1 WHERE id=?2", item.field);
                     conn.execute(&sql, rusqlite::params![redacted, item.id])?;
                     s.store.unquarantine_unit(&bank_id, &item.id)?;
                 }

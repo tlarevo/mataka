@@ -13,11 +13,11 @@
 //! falls back to the original Mutex<Connection> for backward compatibility.
 
 use anyhow::Result;
+use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 // ─── Per-bank schema (identical to original, minus banks table) ──────────
 
@@ -376,8 +376,8 @@ impl LegacyStore {
 
     pub fn list_banks(&self) -> Result<Vec<Value>> {
         let conn = self.conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
+        let mut stmt = conn
+            .prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
         let banks: Vec<Value> = stmt
             .query_map([], |r| {
                 Ok(json!({
@@ -513,8 +513,7 @@ impl BankDb {
             let url = format!("file:{}?mode=ro", path.display());
             let conn = Connection::open_with_flags(
                 &url,
-                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                    | rusqlite::OpenFlags::SQLITE_OPEN_URI,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_URI,
             )?;
             rc.push(Mutex::new(conn));
         }
@@ -523,10 +522,7 @@ impl BankDb {
             write_conn: Mutex::new(wc),
             read_conns: rc,
             next_read: std::sync::atomic::AtomicUsize::new(0),
-            _bank_dir: path
-                .parent()
-                .unwrap_or(Path::new("."))
-                .to_path_buf(),
+            _bank_dir: path.parent().unwrap_or(Path::new(".")).to_path_buf(),
         })
     }
 
@@ -694,8 +690,8 @@ impl Store {
             return legacy.list_banks();
         }
         let conn = self.registry_conn.lock();
-        let mut stmt =
-            conn.prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
+        let mut stmt = conn
+            .prepare("SELECT bank_id, name, mission, created_at FROM banks ORDER BY created_at")?;
         let banks: Vec<Value> = stmt
             .query_map([], |r| {
                 Ok(json!({
@@ -975,8 +971,8 @@ impl Store {
 #[derive(Debug, Clone)]
 pub struct VetScanItem {
     pub id: String,
-    pub source: String,  // "unit" or "document"
-    pub field: String,   // "text", "context", "metadata", "content"
+    pub source: String, // "unit" or "document"
+    pub field: String,  // "text", "context", "metadata", "content"
     pub value: String,
 }
 
@@ -1067,31 +1063,58 @@ impl Store {
         if let Some(legacy) = &self.legacy {
             let conn = legacy.conn.lock();
             // Scan memory_units: text, context, metadata
-            let mut stmt = conn.prepare(
-                "SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1",
-            )?;
-            for row in stmt.query_map(params![bank_id], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                ))
-            })?.filter_map(|r| r.ok()) {
+            let mut stmt = conn
+                .prepare("SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1")?;
+            for row in stmt
+                .query_map(params![bank_id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+            {
                 let (id, text, context, metadata) = row;
-                items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "text".into(), value: text.unwrap_or_default() });
-                if let Some(ctx) = context { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "context".into(), value: ctx }); }
-                if let Some(meta) = metadata { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "metadata".into(), value: meta }); }
+                items.push(VetScanItem {
+                    id: id.clone(),
+                    source: "unit".into(),
+                    field: "text".into(),
+                    value: text.unwrap_or_default(),
+                });
+                if let Some(ctx) = context {
+                    items.push(VetScanItem {
+                        id: id.clone(),
+                        source: "unit".into(),
+                        field: "context".into(),
+                        value: ctx,
+                    });
+                }
+                if let Some(meta) = metadata {
+                    items.push(VetScanItem {
+                        id: id.clone(),
+                        source: "unit".into(),
+                        field: "metadata".into(),
+                        value: meta,
+                    });
+                }
             }
             // Scan documents: content
-            let mut stmt = conn.prepare(
-                "SELECT id, content FROM documents WHERE bank_id=?1",
-            )?;
-            for row in stmt.query_map(params![bank_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })?.filter_map(|r| r.ok()) {
+            let mut stmt = conn.prepare("SELECT id, content FROM documents WHERE bank_id=?1")?;
+            for row in stmt
+                .query_map(params![bank_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+            {
                 if let Some(content) = row.1 {
-                    items.push(VetScanItem { id: row.0, source: "document".into(), field: "content".into(), value: content });
+                    items.push(VetScanItem {
+                        id: row.0,
+                        source: "document".into(),
+                        field: "content".into(),
+                        value: content,
+                    });
                 }
             }
             return Ok(items);
@@ -1100,33 +1123,60 @@ impl Store {
         let conn = bank.read_conn();
         // Scan memory_units: text, context, metadata
         {
-            let mut stmt = conn.prepare(
-                "SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1",
-            )?;
-            for row in stmt.query_map(params![bank_id], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                    r.get::<_, Option<String>>(2)?,
-                    r.get::<_, Option<String>>(3)?,
-                ))
-            })?.filter_map(|r| r.ok()) {
+            let mut stmt = conn
+                .prepare("SELECT id, text, context, metadata FROM memory_units WHERE bank_id=?1")?;
+            for row in stmt
+                .query_map(params![bank_id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, Option<String>>(1)?,
+                        r.get::<_, Option<String>>(2)?,
+                        r.get::<_, Option<String>>(3)?,
+                    ))
+                })?
+                .filter_map(|r| r.ok())
+            {
                 let (id, text, context, metadata) = row;
-                items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "text".into(), value: text.unwrap_or_default() });
-                if let Some(ctx) = context { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "context".into(), value: ctx }); }
-                if let Some(meta) = metadata { items.push(VetScanItem { id: id.clone(), source: "unit".into(), field: "metadata".into(), value: meta }); }
+                items.push(VetScanItem {
+                    id: id.clone(),
+                    source: "unit".into(),
+                    field: "text".into(),
+                    value: text.unwrap_or_default(),
+                });
+                if let Some(ctx) = context {
+                    items.push(VetScanItem {
+                        id: id.clone(),
+                        source: "unit".into(),
+                        field: "context".into(),
+                        value: ctx,
+                    });
+                }
+                if let Some(meta) = metadata {
+                    items.push(VetScanItem {
+                        id: id.clone(),
+                        source: "unit".into(),
+                        field: "metadata".into(),
+                        value: meta,
+                    });
+                }
             }
         }
         // Scan documents: content
         {
-            let mut stmt = conn.prepare(
-                "SELECT id, content FROM documents WHERE bank_id=?1",
-            )?;
-            for row in stmt.query_map(params![bank_id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-            })?.filter_map(|r| r.ok()) {
+            let mut stmt = conn.prepare("SELECT id, content FROM documents WHERE bank_id=?1")?;
+            for row in stmt
+                .query_map(params![bank_id], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+            {
                 if let Some(content) = row.1 {
-                    items.push(VetScanItem { id: row.0, source: "document".into(), field: "content".into(), value: content });
+                    items.push(VetScanItem {
+                        id: row.0,
+                        source: "document".into(),
+                        field: "content".into(),
+                        value: content,
+                    });
                 }
             }
         }

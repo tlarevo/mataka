@@ -122,9 +122,8 @@ pub async fn retain(
             .trim_start_matches("```")
             .trim_end_matches("```")
             .trim();
-        let extraction: Extraction = serde_json::from_str(cleaned).unwrap_or(Extraction {
-            facts: vec![],
-        });
+        let extraction: Extraction =
+            serde_json::from_str(cleaned).unwrap_or(Extraction { facts: vec![] });
         all_facts.extend(extraction.facts);
     }
 
@@ -208,10 +207,7 @@ fn dump_extraction_fixtures(
 
     std::fs::create_dir_all(dir)?;
     let path = std::path::Path::new(dir).join("extraction_fixtures.jsonl");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
 
     let record = serde_json::json!({
         "input": input,

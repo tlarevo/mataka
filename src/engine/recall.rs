@@ -52,27 +52,37 @@ pub fn tags_pass(unit_tags: &[String], filter: &[String], mode: &str) -> bool {
     match mode {
         "any" => {
             // OR match, includes untagged
-            if is_untagged { return true; }
+            if is_untagged {
+                return true;
+            }
             filter.iter().any(|t| unit_tags.contains(t))
         }
         "all" => {
             // AND match, includes untagged
-            if is_untagged { return true; }
+            if is_untagged {
+                return true;
+            }
             filter.iter().all(|t| unit_tags.contains(t))
         }
         "any_strict" => {
             // OR match, excludes untagged
-            if is_untagged { return false; }
+            if is_untagged {
+                return false;
+            }
             filter.iter().any(|t| unit_tags.contains(t))
         }
         "all_strict" => {
             // AND match, excludes untagged
-            if is_untagged { return false; }
+            if is_untagged {
+                return false;
+            }
             filter.iter().all(|t| unit_tags.contains(t))
         }
         "exact" => {
             // Set-equality, excludes untagged (unless filter is empty)
-            if is_untagged { return false; }
+            if is_untagged {
+                return false;
+            }
             unit_tags.len() == filter.len() && filter.iter().all(|t| unit_tags.contains(t))
         }
         _ => true, // unknown mode: pass (defensive)
@@ -235,7 +245,9 @@ pub async fn recall(
                 .unwrap_or_default();
             if ft == "observation" {
                 let mut stmt = conn2
-                    .prepare("SELECT source_unit_id FROM observation_sources WHERE observation_id=?1")
+                    .prepare(
+                        "SELECT source_unit_id FROM observation_sources WHERE observation_id=?1",
+                    )
                     .unwrap();
                 let ids: Vec<String> = stmt
                     .query_map(params![cand.unit_id], |r| r.get(0))
@@ -276,7 +288,10 @@ pub async fn recall(
             continue;
         }
         // Suppress source facts when prefer_observations is active
-        if prefer_observations && (ft == "world" || ft == "experience") && suppressed_sources.contains(&cand.unit_id) {
+        if prefer_observations
+            && (ft == "world" || ft == "experience")
+            && suppressed_sources.contains(&cand.unit_id)
+        {
             continue;
         }
         // Apply tag filter
@@ -371,7 +386,11 @@ mod tests {
     }
     #[test]
     fn any_strict_superset() {
-        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "any_strict"));
+        assert!(tags_pass(
+            &v(&["a", "b", "c"]),
+            &v(&["a", "b"]),
+            "any_strict"
+        ));
     }
     #[test]
     fn any_strict_exact_match() {
@@ -393,7 +412,11 @@ mod tests {
     }
     #[test]
     fn all_strict_superset() {
-        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "all_strict"));
+        assert!(tags_pass(
+            &v(&["a", "b", "c"]),
+            &v(&["a", "b"]),
+            "all_strict"
+        ));
     }
     #[test]
     fn all_strict_exact_match() {

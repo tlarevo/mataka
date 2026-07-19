@@ -87,7 +87,6 @@ impl VetMode {
 /// while letting git SHAs and UUIDs pass.
 const ENTROPY_THRESHOLD: f64 = 4.5;
 
-
 fn shannon_entropy(s: &str) -> f64 {
     if s.is_empty() {
         return 0.0;
@@ -153,7 +152,11 @@ impl VetEngine {
 
         // Phase 1: regex rule matching
         for rule in &self.rules {
-            let matches: Vec<_> = rule.re.find_iter(&redacted).map(|m| (m.start(), m.end())).collect();
+            let matches: Vec<_> = rule
+                .re
+                .find_iter(&redacted)
+                .map(|m| (m.start(), m.end()))
+                .collect();
             if !matches.is_empty() {
                 let count = matches.len();
                 // Replace from end to preserve indices
@@ -168,7 +171,8 @@ impl VetEngine {
         // Extract alphanumeric tokens that weren't caught by regex rules
         let token_re = Regex::new(r"[A-Za-z0-9/+=_-]{20,}").unwrap();
         let mut entropy_hits = 0usize;
-        let token_matches: Vec<_> = token_re.find_iter(&redacted)
+        let token_matches: Vec<_> = token_re
+            .find_iter(&redacted)
             .filter(|m| !m.as_str().contains("{{"))
             .map(|m| (m.start(), m.end(), m.as_str().to_string()))
             .collect();
@@ -179,9 +183,7 @@ impl VetEngine {
             }
         }
         if entropy_hits > 0 {
-            *seen_rules
-                .entry("entropy_high".into())
-                .or_insert(0) += entropy_hits;
+            *seen_rules.entry("entropy_high".into()).or_insert(0) += entropy_hits;
         }
 
         // Build detections list
@@ -204,7 +206,11 @@ impl VetEngine {
         }
         let result = self.scan(text);
         if !result.detections.is_empty() && mode == VetMode::Strict {
-            let rule_ids: Vec<&str> = result.detections.iter().map(|d| d.rule_id.as_str()).collect();
+            let rule_ids: Vec<&str> = result
+                .detections
+                .iter()
+                .map(|d| d.rule_id.as_str())
+                .collect();
             anyhow::bail!(
                 "Vetting rejected: secrets detected [{}]",
                 rule_ids.join(", ")
@@ -232,7 +238,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "Use AKIAIOSFODNN7EXAMPLE for the AWS key";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "aws_access_key"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "aws_access_key"));
         assert!(result.redacted_text.contains("{{REDACTED:aws_access_key}}"));
         assert!(!result.redacted_text.contains("AKIAIOSFODNN7EXAMPLE"));
     }
@@ -242,7 +251,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "Token: ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "github_token"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "github_token"));
         assert!(result.redacted_text.contains("{{REDACTED:github_token}}"));
     }
 
@@ -258,9 +270,13 @@ mod tests {
     #[test]
     fn detects_private_key() {
         let engine = VetEngine::new().unwrap();
-        let text = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
+        let text =
+            "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "private_key_block"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "private_key_block"));
         assert!(result.redacted_text.contains("{{REDACTED:private_key}}"));
     }
 
@@ -269,7 +285,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "Connect to postgres://admin:secret123@db.example.com:5432/mydb";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "connection_string"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "connection_string"));
     }
 
     #[test]
@@ -277,7 +296,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "Key: sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "openai_key_short"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "openai_key_short"));
     }
 
     #[test]
@@ -285,7 +307,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "anthropic_key"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "anthropic_key"));
     }
 
     #[test]
@@ -304,7 +329,11 @@ mod tests {
                      UUID 550e8400-e29b-41d4-a716-446655440000, \
                      hash dGVzdA==";
         let result = engine.scan(text);
-        assert!(result.detections.is_empty(), "benign lookalikes flagged: {:?}", result.detections);
+        assert!(
+            result.detections.is_empty(),
+            "benign lookalikes flagged: {:?}",
+            result.detections
+        );
     }
 
     #[test]
@@ -314,7 +343,10 @@ mod tests {
         let text = "secret is kJ9sB2mN4pQ7rT1vX3yZ5aC8eG2hJ4kL6nP";
         let result = engine.scan(text);
         assert!(
-            result.detections.iter().any(|d| d.rule_id == "entropy_high"),
+            result
+                .detections
+                .iter()
+                .any(|d| d.rule_id == "entropy_high"),
             "high-entropy token not caught: {:?}",
             result.detections
         );
@@ -327,7 +359,9 @@ mod tests {
         let result = engine.scan(text);
         assert!(result.detections.len() >= 2);
         assert!(!result.redacted_text.contains("AKIAIOSFODNN7EXAMPLE"));
-        assert!(!result.redacted_text.contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"));
+        assert!(!result
+            .redacted_text
+            .contains("ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghij"));
     }
 
     #[test]
@@ -362,7 +396,10 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "API_KEY=super_secret_value_here_12345";
         let result = engine.scan(text);
-        assert!(result.detections.iter().any(|d| d.rule_id == "env_secret_assignment"));
+        assert!(result
+            .detections
+            .iter()
+            .any(|d| d.rule_id == "env_secret_assignment"));
     }
 
     #[test]
@@ -370,7 +407,11 @@ mod tests {
         let engine = VetEngine::new().unwrap();
         let text = "AKIA1111111111111111 AKIA2222222222222222 AKIA3333333333333333";
         let result = engine.scan(text);
-        let aws = result.detections.iter().find(|d| d.rule_id == "aws_access_key").unwrap();
+        let aws = result
+            .detections
+            .iter()
+            .find(|d| d.rule_id == "aws_access_key")
+            .unwrap();
         assert_eq!(aws.count, 3);
     }
 }

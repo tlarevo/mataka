@@ -160,7 +160,9 @@ fn mock_chat(system: &str, user: &str) -> String {
                 let line = line.trim();
                 if let Some(id_start) = line.find("\"id\":") {
                     let rest = &line[id_start + 5..].trim();
-                    let id: String = rest.trim_matches(|c: char| c == '"' || c == ',' || c == ' ').to_string();
+                    let id: String = rest
+                        .trim_matches(|c: char| c == '"' || c == ',' || c == ' ')
+                        .to_string();
                     Some(id)
                 } else {
                     None
@@ -173,7 +175,9 @@ fn mock_chat(system: &str, user: &str) -> String {
                 let line = line.trim();
                 if let Some(text_start) = line.find("\"text\":") {
                     let rest = &line[text_start + 7..].trim();
-                    let text: String = rest.trim_matches(|c: char| c == '"' || c == ',').to_string();
+                    let text: String = rest
+                        .trim_matches(|c: char| c == '"' || c == ',')
+                        .to_string();
                     Some(text)
                 } else {
                     None
@@ -193,7 +197,8 @@ fn mock_chat(system: &str, user: &str) -> String {
             "observation_text": observation,
             "source_ids": source_ids,
             "supersedes": true
-        }).to_string()
+        })
+        .to_string()
     } else {
         format!(
             "[mock reflect] Based on retained memories, regarding: {}",

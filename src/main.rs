@@ -2,8 +2,8 @@ mod api;
 mod chunking;
 mod engine;
 mod llm;
-mod tokens;
 mod store;
+mod tokens;
 mod vet;
 
 use std::sync::Arc;
@@ -111,8 +111,10 @@ async fn run_vet_subcommand(args: &[String]) -> anyhow::Result<()> {
             }
             total_findings += result.detections.len();
             for det in &result.detections {
-                println!("[{bid}] {} ({}) {}x in {}.{} id={}",
-                    det.rule_id, item.source, det.count, item.source, item.field, item.id);
+                println!(
+                    "[{bid}] {} ({}) {}x in {}.{} id={}",
+                    det.rule_id, item.source, det.count, item.source, item.field, item.id
+                );
             }
             if fix && item.field == "text" && item.source == "unit" {
                 store.quarantine_unit(bid, &item.id)?;
