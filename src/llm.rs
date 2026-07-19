@@ -114,7 +114,7 @@ impl LlmClient {
 /// Deterministic 64-dim hashing embedding: token hash buckets, L2-normalized.
 /// Real semantic similarity is approximated by lexical overlap — good enough
 /// to exercise the full pipeline offline.
-fn mock_embed(text: &str) -> Vec<f32> {
+pub(crate) fn mock_embed(text: &str) -> Vec<f32> {
     let mut v = vec![0.0f32; 64];
     for tok in text.to_lowercase().split(|c: char| !c.is_alphanumeric()) {
         if tok.is_empty() {
@@ -152,6 +152,48 @@ fn mock_chat(system: &str, user: &str) -> String {
             })
             .collect();
         json!({ "facts": facts }).to_string()
+    } else if system.contains("consolidation") {
+        // Mock consolidation: parse source facts from user message, concatenate deduplicated sentences
+        let source_ids: Vec<String> = user
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if let Some(id_start) = line.find("\"id\":") {
+                    let rest = &line[id_start + 5..].trim();
+                    let id: String = rest.trim_matches(|c: char| c == '"' || c == ',' || c == ' ').to_string();
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let texts: Vec<String> = user
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                if let Some(text_start) = line.find("\"text\":") {
+                    let rest = &line[text_start + 7..].trim();
+                    let text: String = rest.trim_matches(|c: char| c == '"' || c == ',').to_string();
+                    Some(text)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        // Dedupe sentences
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        let deduped: Vec<&str> = texts
+            .iter()
+            .flat_map(|t| t.split(". "))
+            .filter(|s| !s.is_empty() && seen.insert(s.to_lowercase()))
+            .collect();
+        let observation = deduped.join(". ");
+        json!({
+            "observation_text": observation,
+            "source_ids": source_ids,
+            "supersedes": true
+        }).to_string()
     } else {
         format!(
             "[mock reflect] Based on retained memories, regarding: {}",
