@@ -9,6 +9,7 @@
 use super::fusion::{cap_per_source, reciprocal_rank_fusion, RetrievalResult};
 use crate::llm::LlmClient;
 use crate::store::{blob_to_f32s, cosine, Store};
+use crate::tokens;
 use anyhow::Result;
 use rusqlite::params;
 use serde::Serialize;
@@ -197,7 +198,7 @@ pub async fn recall(
         if !type_filter.contains(&ft) {
             continue;
         }
-        let est_tokens = text.len() / 4 + 8; // MVP estimator; swap for tiktoken-rs
+        let est_tokens = tokens::count(&text) + 8; // per-item overhead (matches upstream)
         if token_used + est_tokens > max_tokens {
             break;
         }

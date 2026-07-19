@@ -1,6 +1,7 @@
 mod api;
 mod engine;
 mod llm;
+mod tokens;
 mod store;
 
 use std::sync::Arc;
