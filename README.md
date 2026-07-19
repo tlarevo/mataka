@@ -20,20 +20,23 @@ Official Hindsight SDKs (`pip install hindsight-client`, `npm install hindsight-
 
 ## Quick start
 
-### From source
+### Homebrew (recommended)
 
 ```bash
-# Clone and build
-git clone https://github.com/tlarevo/mataka.git
-cd mataka
-cargo build --release
+brew install tlarevo/tap/mataka
+brew services start mataka  # starts on boot, auto-restarts on crash
+```
 
-# Run with a local LLM (e.g. Ollama)
+mataka defaults to [apfel](https://github.com/Arthur-Ficial/apfel) (on-device LLM via Apple Intelligence) on macOS. To use a different provider, override the environment variables:
+
+```bash
+brew services stop mataka
+# Edit the launchd plist to set your provider
 MATAKA_LLM_PROVIDER=openai-compatible \
 MATAKA_LLM_BASE_URL=http://localhost:11434/v1 \
 MATAKA_LLM_MODEL=qwen2.5:7b \
 MATAKA_EMBEDDINGS_MODEL=nomic-embed-text \
-./target/release/mataka
+mataka
 ```
 
 ### From GitHub releases
@@ -46,6 +49,15 @@ MATAKA_LLM_BASE_URL=http://localhost:11434/v1 \
 MATAKA_LLM_MODEL=qwen2.5:7b \
 MATAKA_EMBEDDINGS_MODEL=nomic-embed-text \
 ./mataka
+```
+
+### From source
+
+```bash
+git clone https://github.com/tlarevo/mataka.git
+cd mataka
+cargo build --release
+MATAKA_LLM_PROVIDER=mock ./target/release/mataka
 ```
 
 ### Verify it's running
@@ -64,7 +76,7 @@ mataka accepts both native `MATAKA_*` and upstream `HINDSIGHT_API_*` environment
 | `MATAKA_LLM_PROVIDER` | `openai-compatible` | LLM provider (`openai-compatible`, `mock`) |
 | `MATAKA_LLM_BASE_URL` | — | OpenAI-compatible chat endpoint |
 | `MATAKA_LLM_API_KEY` | — | API key (optional for local providers) |
-| `MATAKA_LLM_MODEL` | — | Chat model name |
+| `MATAKA_DB` | `~/.local/share/mataka` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_EMBEDDINGS_MODEL` | — | Embeddings model name |
 | `MATAKA_PORT` | `8888` | Server listen port |
 | `MATAKA_DB` | `mataka-data` | Data directory (per-bank sharding) or legacy `.db` file path |
