@@ -39,6 +39,47 @@ impl Budget {
     }
 }
 
+/// Pure function: does a unit's tag set pass the filter?
+pub fn tags_pass(unit_tags: &[String], filter: &[String], mode: &str) -> bool {
+    if filter.is_empty() {
+        // exact + empty filter → only untagged pass
+        return match mode {
+            "exact" => unit_tags.is_empty(),
+            _ => true, // all other modes pass with no constraint
+        };
+    }
+    let is_untagged = unit_tags.is_empty();
+    match mode {
+        "any" => {
+            // OR match, includes untagged
+            if is_untagged { return true; }
+            filter.iter().any(|t| unit_tags.contains(t))
+        }
+        "all" => {
+            // AND match, includes untagged
+            if is_untagged { return true; }
+            filter.iter().all(|t| unit_tags.contains(t))
+        }
+        "any_strict" => {
+            // OR match, excludes untagged
+            if is_untagged { return false; }
+            filter.iter().any(|t| unit_tags.contains(t))
+        }
+        "all_strict" => {
+            // AND match, excludes untagged
+            if is_untagged { return false; }
+            filter.iter().all(|t| unit_tags.contains(t))
+        }
+        "exact" => {
+            // Set-equality, excludes untagged (unless filter is empty)
+            if is_untagged { return false; }
+            unit_tags.len() == filter.len() && filter.iter().all(|t| unit_tags.contains(t))
+        }
+        _ => true, // unknown mode: pass (defensive)
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub async fn recall(
     store: &Store,
     llm: &LlmClient,
@@ -47,6 +88,8 @@ pub async fn recall(
     types: &[String],
     budget: &str,
     max_tokens: usize,
+    filter_tags: &[String],
+    tags_match: &str,
 ) -> Result<Vec<RecallResult>> {
     let n = Budget::candidates(budget);
     let type_filter: Vec<String> = if types.is_empty() {
@@ -198,7 +241,13 @@ pub async fn recall(
         if !type_filter.contains(&ft) {
             continue;
         }
+        // Apply tag filter
+        let unit_tags: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
+        if !filter_tags.is_empty() && !tags_pass(&unit_tags, filter_tags, tags_match) {
+            continue;
+        }
         let est_tokens = tokens::count(&text) + 8; // per-item overhead (matches upstream)
+
         if token_used + est_tokens > max_tokens {
             break;
         }
@@ -215,4 +264,133 @@ pub async fn recall(
         });
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(s: &[&str]) -> Vec<String> {
+        s.iter().map(|s| s.to_string()).collect()
+    }
+
+    // --- any (OR, includes untagged) ---
+    #[test]
+    fn any_untagged() {
+        assert!(tags_pass(&[], &v(&["a"]), "any"));
+    }
+    #[test]
+    fn any_partial_overlap() {
+        assert!(tags_pass(&v(&["a"]), &v(&["a", "b"]), "any"));
+    }
+    #[test]
+    fn any_full_overlap() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a"]), "any"));
+    }
+    #[test]
+    fn any_superset() {
+        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "any"));
+    }
+    #[test]
+    fn any_exact_match() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a", "b"]), "any"));
+    }
+
+    // --- all (AND, includes untagged) ---
+    #[test]
+    fn all_untagged() {
+        assert!(tags_pass(&[], &v(&["a"]), "all"));
+    }
+    #[test]
+    fn all_partial_overlap() {
+        assert!(!tags_pass(&v(&["a"]), &v(&["a", "b"]), "all"));
+    }
+    #[test]
+    fn all_full_overlap() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a"]), "all"));
+    }
+    #[test]
+    fn all_superset() {
+        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "all"));
+    }
+    #[test]
+    fn all_exact_match() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a", "b"]), "all"));
+    }
+
+    // --- any_strict (OR, excludes untagged) ---
+    #[test]
+    fn any_strict_untagged() {
+        assert!(!tags_pass(&[], &v(&["a"]), "any_strict"));
+    }
+    #[test]
+    fn any_strict_partial_overlap() {
+        assert!(tags_pass(&v(&["a"]), &v(&["a", "b"]), "any_strict"));
+    }
+    #[test]
+    fn any_strict_full_overlap() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a"]), "any_strict"));
+    }
+    #[test]
+    fn any_strict_superset() {
+        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "any_strict"));
+    }
+    #[test]
+    fn any_strict_exact_match() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a", "b"]), "any_strict"));
+    }
+
+    // --- all_strict (AND, excludes untagged) ---
+    #[test]
+    fn all_strict_untagged() {
+        assert!(!tags_pass(&[], &v(&["a"]), "all_strict"));
+    }
+    #[test]
+    fn all_strict_partial_overlap() {
+        assert!(!tags_pass(&v(&["a"]), &v(&["a", "b"]), "all_strict"));
+    }
+    #[test]
+    fn all_strict_full_overlap() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a"]), "all_strict"));
+    }
+    #[test]
+    fn all_strict_superset() {
+        assert!(tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "all_strict"));
+    }
+    #[test]
+    fn all_strict_exact_match() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a", "b"]), "all_strict"));
+    }
+
+    // --- exact (set-equality, excludes untagged; empty filter → only untagged) ---
+    #[test]
+    fn exact_untagged() {
+        assert!(!tags_pass(&[], &v(&["a"]), "exact"));
+    }
+    #[test]
+    fn exact_partial_overlap() {
+        assert!(!tags_pass(&v(&["a"]), &v(&["a", "b"]), "exact"));
+    }
+    #[test]
+    fn exact_full_overlap() {
+        assert!(!tags_pass(&v(&["a", "b"]), &v(&["a"]), "exact"));
+    }
+    #[test]
+    fn exact_superset() {
+        assert!(!tags_pass(&v(&["a", "b", "c"]), &v(&["a", "b"]), "exact"));
+    }
+    #[test]
+    fn exact_exact_match() {
+        assert!(tags_pass(&v(&["a", "b"]), &v(&["a", "b"]), "exact"));
+    }
+
+    // --- exact + empty filter: only untagged pass ---
+    #[test]
+    fn exact_empty_filter_untagged() {
+        assert!(tags_pass(&[], &[], "exact"));
+    }
+    #[test]
+    fn exact_empty_filter_tagged() {
+        assert!(!tags_pass(&v(&["a"]), &[], "exact"));
+    }
 }

@@ -220,6 +220,15 @@ struct RecallRequest {
     budget: String,
     #[serde(default = "default_max_tokens")]
     max_tokens: usize,
+    #[serde(default)]
+    tags: Option<Vec<String>>,
+    #[serde(default = "default_tags_match")]
+    tags_match: String,
+    #[serde(default)]
+    tag_groups: Option<serde_json::Value>,
+}
+fn default_tags_match() -> String {
+    "any".into()
 }
 fn default_budget() -> String {
     "mid".into()
@@ -233,6 +242,10 @@ async fn recall_memories(
     Path(bank_id): Path<String>,
     Json(req): Json<RecallRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    if req.tag_groups.is_some() {
+        return Err(ApiError(anyhow::anyhow!("tag_groups not implemented (501)")));
+    }
+    let tags = req.tags.unwrap_or_default();
     let results = engine::recall::recall(
         &s.store,
         &s.llm,
@@ -241,6 +254,8 @@ async fn recall_memories(
         &req.types.unwrap_or_default(),
         &req.budget,
         req.max_tokens,
+        &tags,
+        &req.tags_match,
     )
     .await?;
     Ok(Json(json!({"results": results})))

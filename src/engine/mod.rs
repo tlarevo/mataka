@@ -26,6 +26,8 @@ pub async fn reflect(
         &["world".into(), "experience".into(), "observation".into()],
         budget,
         2048,
+        &[],
+        "any",
     )
     .await?;
 
