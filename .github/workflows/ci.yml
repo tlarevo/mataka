@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  MATAKA_LLM_PROVIDER: mock
+
+jobs:
+  check:
+    name: fmt + clippy + build + test
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Check formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test
+
+  smoke:
+    name: smoke flow
+    runs-on: macos-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: "1.95.0"
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+
+      - name: Build
+        run: cargo build
+
+      - name: Start server
+        run: |
+          ./target/debug/mataka &
+          MATAKA_PID=$!
+          # Wait for server to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8888/health > /dev/null 2>&1; then
+              echo "Server ready on attempt $i"
+              break
+            fi
+            sleep 0.5
+          done
+          # Cleanup on exit
+          trap "kill $MATAKA_PID 2>/dev/null || true" EXIT
+
+      - name: Run smoke flow
+        run: bash scripts/smoke.sh
