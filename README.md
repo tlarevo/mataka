@@ -63,7 +63,7 @@ MATAKA_LLM_PROVIDER=mock ./target/release/mataka
 ### Verify it's running
 
 ```bash
-curl http://localhost:8888/health
+curl http://localhost:8889/health
 # {"status":"ok"}
 ```
 
@@ -78,7 +78,7 @@ mataka accepts both native `MATAKA_*` and upstream `HINDSIGHT_API_*` environment
 | `MATAKA_LLM_API_KEY` | — | API key (optional for local providers) |
 | `MATAKA_DB` | `~/.local/share/mataka` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_EMBEDDINGS_MODEL` | — | Embeddings model name |
-| `MATAKA_PORT` | `8888` | Server listen port |
+| `MATAKA_PORT` | `8889` | Server listen port |
 | `MATAKA_DB` | `mataka-data` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_VET` | `redact` | Vetting mode: `strict` (reject secrets), `redact` (replace in-place), `off` |
 
@@ -134,27 +134,27 @@ Full contract: [contract/openapi-0.8.4.json](contract/openapi-0.8.4.json) (56 do
 
 ```bash
 # Create a bank
-curl -X PUT http://localhost:8888/v1/default/banks/my-project \
+curl -X PUT http://localhost:8889/v1/default/banks/my-project \
   -H 'Content-Type: application/json' \
   -d '{"name": "my-project", "mission": "Agent memory for project X"}'
 
 # Retain facts (async — returns operation_id)
-curl -X POST http://localhost:8888/v1/default/banks/my-project/memories \
+curl -X POST http://localhost:8889/v1/default/banks/my-project/memories \
   -H 'Content-Type: application/json' \
   -d '{"items": [{"content": "Alice deployed the hotfix to production on 2026-07-15", "tags": ["alice"]}]}'
 
 # Synchronous retain (for scripts/tests)
-curl -X POST http://localhost:8888/v1/default/banks/my-project/memories \
+curl -X POST http://localhost:8889/v1/default/banks/my-project/memories \
   -H 'Content-Type: application/json' \
   -d '{"items": [{"content": "..."}], "async": false}'
 
 # Recall with tag filtering
-curl -X POST http://localhost:8888/v1/default/banks/my-project/memories/recall \
+curl -X POST http://localhost:8889/v1/default/banks/my-project/memories/recall \
   -H 'Content-Type: application/json' \
   -d '{"query": "deployments", "tags": ["alice"], "tags_match": "any_strict", "max_tokens": 2000}'
 
 # Reflect (grounded generation from memories)
-curl -X POST http://localhost:8888/v1/default/banks/my-project/reflect \
+curl -X POST http://localhost:8889/v1/default/banks/my-project/reflect \
   -H 'Content-Type: application/json' \
   -d '{"query": "Summarize recent deployment activity", "budget": "2048"}'
 ```
@@ -211,7 +211,7 @@ A Python/uv harness for measuring recall parity between mataka and upstream Hind
 
 ```bash
 cd harness
-uv run run_diff.py --mataka http://localhost:8888 --hindsight http://localhost:9888
+uv run run_diff.py --mataka http://localhost:8889 --hindsight http://localhost:9888
 ```
 
 Outputs a markdown report with per-fixture recall@10 overlap, latency, and RSS comparison. Includes ~200 fixture payloads covering conversations, temporal facts, multi-entity sentences, and tag-isolation cases.

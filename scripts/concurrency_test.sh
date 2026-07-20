@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Concurrency tests for per-bank sharding + read pool (THA-137)
-# Requires: MATAKA_LLM_PROVIDER=mock, server on $PORT (default 8888)
+# Requires: MATAKA_LLM_PROVIDER=mock, server on $PORT (default 8889)
 set -euo pipefail
 
-PORT="${MATAKA_PORT:-8888}"
+PORT="${MATAKA_PORT:-8889}"
 BASE="http://localhost:$PORT"
 PASS=0
 FAIL=0

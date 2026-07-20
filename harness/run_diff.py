@@ -7,7 +7,7 @@ validates responses against the OpenAPI 0.8.4 schema, checks tag isolation,
 and runs an SDK smoke test against mataka.
 
 Usage:
-    uv run harness/run_diff.py --mataka http://localhost:8888 --hindsight http://localhost:9888
+    uv run harness/run_diff.py --mataka http://localhost:8889 --hindsight http://localhost:9888
 """
 from __future__ import annotations
 

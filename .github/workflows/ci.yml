@@ -62,7 +62,7 @@ jobs:
           MATAKA_PID=$!
           # Wait for server to be ready
           for i in $(seq 1 30); do
-            if curl -sf http://localhost:8888/health > /dev/null 2>&1; then
+            if curl -sf http://localhost:8889/health > /dev/null 2>&1; then
               echo "Server ready on attempt $i"
               break
             fi

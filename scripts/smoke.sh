@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Smoke flow: health → create bank → retain 3 facts → recall → reflect → stats
-# Requires: MATAKA_LLM_PROVIDER=mock, server on $PORT (default 8888)
+# Requires: MATAKA_LLM_PROVIDER=mock, server on $PORT (default 8889)
 set -euo pipefail
 
-PORT="${MATAKA_PORT:-8888}"
+PORT="${MATAKA_PORT:-8889}"
 BASE="http://localhost:$PORT"
 BANK="smoke-test-$(date +%s)"
 PASS=0

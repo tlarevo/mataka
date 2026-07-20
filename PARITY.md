@@ -57,5 +57,5 @@ BM25 implementation make exact ordering impossible and meaningless).
 ## Env-var compatibility
 
 mataka reads the same `HINDSIGHT_API_LLM_PROVIDER`, `HINDSIGHT_API_LLM_API_KEY`,
-`HINDSIGHT_API_LLM_MODEL`, `HINDSIGHT_API_LLM_BASE_URL` variables and defaults to port 8888,
+`HINDSIGHT_API_LLM_MODEL`, `HINDSIGHT_API_LLM_BASE_URL` variables and defaults to port 8889,
 so existing docker-compose/env setups carry over.

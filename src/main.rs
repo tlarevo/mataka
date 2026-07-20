@@ -31,7 +31,7 @@ async fn main() -> anyhow::Result<()> {
         .or_else(|_| std::env::var("HINDSIGHT_API_PORT"))
         .ok()
         .and_then(|p| p.parse().ok())
-        .unwrap_or(8888);
+        .unwrap_or(8889);
 
     // Detect legacy single-file mode: if path exists and is a file (not a directory)
     let path = std::path::Path::new(&db_path);
