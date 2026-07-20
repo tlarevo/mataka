@@ -49,6 +49,7 @@ pub struct RetainOutcome {
     pub fact_count: usize,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn retain(
     store: &Store,
     llm: &LlmClient,
@@ -57,6 +58,8 @@ pub async fn retain(
     context: Option<&str>,
     tags: &[String],
     metadata: &Value,
+    import_mode: bool,
+    import_fact_type: Option<&str>,
 ) -> Result<RetainOutcome> {
     store.ensure_bank(bank_id)?;
     // ─── Stage 1: Ingress vet guard ─────────────────────────────────────
@@ -85,6 +88,20 @@ pub async fn retain(
     };
     let context = context.as_deref();
 
+    let mut all_facts: Vec<ExtractedFact> = Vec::new();
+
+    if import_mode {
+        // Import mode: skip LLM extraction — content IS the already-extracted fact.
+        // Still embeds and stores normally. Use for Hindsight migration.
+        let ft = import_fact_type.unwrap_or("world");
+        all_facts.push(ExtractedFact {
+            text: content.to_string(),
+            fact_type: ft.to_string(),
+            entities: vec![],
+            occurred_start: None,
+            occurred_end: None,
+        });
+    } else {
     // Event Date for temporal resolution — injected into each chunk's user message.
     let event_date = chrono::Utc::now();
     let event_date_str = format!(
@@ -96,8 +113,6 @@ pub async fn retain(
     // Chunk long inputs before extraction
     let chunks = chunking::chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
     let total_chunks = chunks.len();
-
-    let mut all_facts: Vec<ExtractedFact> = Vec::new();
 
     for (i, chunk) in chunks.iter().enumerate() {
         // Build user message with Event Date, matching upstream's _build_user_message
@@ -140,6 +155,7 @@ pub async fn retain(
             dump_extraction_fixtures(&dump_dir, &content, &llm.model, &all_facts).ok();
         }
     }
+    } // end else (non-import mode)
 
     if all_facts.is_empty() {
         return Ok(RetainOutcome {

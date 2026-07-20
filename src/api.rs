@@ -162,6 +162,15 @@ struct RetainItem {
     tags: Vec<String>,
     #[serde(default)]
     metadata: Value,
+    /// Skip LLM extraction — treat `content` as an already-extracted fact.
+    /// Still embeds and stores normally. Use for importing pre-extracted
+    /// memories (e.g. from Hindsight migration).
+    #[serde(default)]
+    import: bool,
+    /// Fact type for import mode: "world", "experience", or "observation".
+    /// Only used when `import: true`; ignored otherwise.
+    #[serde(default)]
+    fact_type: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -238,6 +247,8 @@ async fn retain_memories(
                 item.context.as_deref(),
                 &item.tags,
                 &item.metadata,
+                item.import,
+                item.fact_type.as_deref(),
             )
             .await?;
         }
@@ -268,6 +279,8 @@ async fn run_retain_background(
             item.context.as_deref(),
             &item.tags,
             &item.metadata,
+            item.import,
+            item.fact_type.as_deref(),
         )
         .await?;
         total_facts += out.fact_count;
