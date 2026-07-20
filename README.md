@@ -27,7 +27,7 @@ brew install tlarevo/tap/mataka
 brew services start mataka  # starts on boot, auto-restarts on crash
 ```
 
-mataka defaults to [apfel](https://github.com/Arthur-Ficial/apfel) (on-device LLM via Apple Intelligence) on macOS. To use a different provider, override the environment variables:
+mataka defaults to Ollama (`qwen2.5:7b` + `nomic-embed-text`) running locally. To use a different provider:
 
 ```bash
 brew services stop mataka
@@ -36,6 +36,15 @@ MATAKA_LLM_PROVIDER=openai-compatible \
 MATAKA_LLM_BASE_URL=http://localhost:11434/v1 \
 MATAKA_LLM_MODEL=qwen2.5:7b \
 MATAKA_EMBEDDINGS_MODEL=nomic-embed-text \
+mataka
+```
+
+To use [apfel](https://github.com/Arthur-Ficial/apfel) (on-device LLM via Apple Intelligence, macOS 26+):
+
+```bash
+MATAKA_LLM_BASE_URL=http://localhost:11435/v1 \
+MATAKA_LLM_MODEL=apple-foundationmodel \
+MATAKA_EMBEDDINGS_MODEL=apple-foundationmodel \
 mataka
 ```
 
@@ -148,6 +157,7 @@ mataka accepts both native `MATAKA_*` and upstream `HINDSIGHT_API_*` environment
 | `MATAKA_LLM_PROVIDER` | `openai-compatible` | LLM provider (`openai-compatible`, `mock`) |
 | `MATAKA_LLM_BASE_URL` | — | OpenAI-compatible chat endpoint |
 | `MATAKA_LLM_API_KEY` | — | API key (optional for local providers) |
+| `MATAKA_LLM_MODEL` | — | Chat model name |
 | `MATAKA_DB` | `~/.local/share/mataka` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_EMBEDDINGS_MODEL` | — | Embeddings model name |
 | `MATAKA_PORT` | `8889` | Server listen port |
