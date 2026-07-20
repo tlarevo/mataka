@@ -102,59 +102,59 @@ pub async fn retain(
             occurred_end: None,
         });
     } else {
-    // Event Date for temporal resolution — injected into each chunk's user message.
-    let event_date = chrono::Utc::now();
-    let event_date_str = format!(
-        "{} ({})",
-        event_date.format("%A, %B %d, %Y"),
-        event_date.format("%Y-%m-%d")
-    );
+        // Event Date for temporal resolution — injected into each chunk's user message.
+        let event_date = chrono::Utc::now();
+        let event_date_str = format!(
+            "{} ({})",
+            event_date.format("%A, %B %d, %Y"),
+            event_date.format("%Y-%m-%d")
+        );
 
-    // Chunk long inputs before extraction
-    let chunks = chunking::chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
-    let total_chunks = chunks.len();
+        // Chunk long inputs before extraction
+        let chunks = chunking::chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
+        let total_chunks = chunks.len();
 
-    for (i, chunk) in chunks.iter().enumerate() {
-        // Build user message with Event Date, matching upstream's _build_user_message
-        let user_message = format!(
-            "Extract facts from the following text chunk.\n\
+        for (i, chunk) in chunks.iter().enumerate() {
+            // Build user message with Event Date, matching upstream's _build_user_message
+            let user_message = format!(
+                "Extract facts from the following text chunk.\n\
              Chunk: {}/{}\n\
              Event Date: {}\n\
              Context: {}\n\
              \n\
              Text:\n{}",
-            i + 1,
-            total_chunks,
-            event_date_str,
-            context.unwrap_or("none"),
-            chunk
-        );
+                i + 1,
+                total_chunks,
+                event_date_str,
+                context.unwrap_or("none"),
+                chunk
+            );
 
-        let raw = llm.chat(EXTRACTION_SYSTEM, &user_message, true).await?;
-        let cleaned = raw
-            .trim()
-            .trim_start_matches("```json")
-            .trim_start_matches("```")
-            .trim_end_matches("```")
-            .trim();
-        let extraction: Extraction =
-            serde_json::from_str(cleaned).unwrap_or(Extraction { facts: vec![] });
-        all_facts.extend(extraction.facts);
-    }
-
-    // Dedupe identical fact texts within the batch (cross-chunk dedup)
-    {
-        use std::collections::HashSet;
-        let mut seen = HashSet::new();
-        all_facts.retain(|f| seen.insert(f.text.clone()));
-    }
-
-    // Fixture dump for Looper eval harness (THA-136)
-    if let Ok(dump_dir) = std::env::var("MATAKA_DUMP_EXTRACTIONS") {
-        if !dump_dir.is_empty() {
-            dump_extraction_fixtures(&dump_dir, &content, &llm.model, &all_facts).ok();
+            let raw = llm.chat(EXTRACTION_SYSTEM, &user_message, true).await?;
+            let cleaned = raw
+                .trim()
+                .trim_start_matches("```json")
+                .trim_start_matches("```")
+                .trim_end_matches("```")
+                .trim();
+            let extraction: Extraction =
+                serde_json::from_str(cleaned).unwrap_or(Extraction { facts: vec![] });
+            all_facts.extend(extraction.facts);
         }
-    }
+
+        // Dedupe identical fact texts within the batch (cross-chunk dedup)
+        {
+            use std::collections::HashSet;
+            let mut seen = HashSet::new();
+            all_facts.retain(|f| seen.insert(f.text.clone()));
+        }
+
+        // Fixture dump for Looper eval harness (THA-136)
+        if let Ok(dump_dir) = std::env::var("MATAKA_DUMP_EXTRACTIONS") {
+            if !dump_dir.is_empty() {
+                dump_extraction_fixtures(&dump_dir, &content, &llm.model, &all_facts).ok();
+            }
+        }
     } // end else (non-import mode)
 
     if all_facts.is_empty() {
