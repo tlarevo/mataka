@@ -67,6 +67,78 @@ curl http://localhost:8889/health
 # {"status":"ok"}
 ```
 
+## Migrating from Hindsight
+
+mataka is a drop-in replacement for Hindsight. To migrate your existing memories:
+
+### 1. Start both servers
+
+```bash
+# Start Hindsight (on its default port 8888)
+hindsight-embed daemon start
+
+# Start mataka (on port 8889, to avoid conflict)
+MATAKA_LLM_PROVIDER=openai-compatible \
+MATAKA_LLM_BASE_URL=http://localhost:11434/v1 \
+MATAKA_LLM_MODEL=qwen2.5:7b \
+MATAKA_EMBEDDINGS_MODEL=nomic-embed-text \
+mataka &
+```
+
+### 2. Fetch memories from Hindsight
+
+```bash
+# Fetch all memories (paginated)
+curl -sf "http://localhost:8888/v1/default/banks/default/memories/list?limit=500" > /tmp/hindsight.json
+# Check count
+python3 -c "import json; d=json.load(open('/tmp/hindsight.json')); print(f'{len(d[\"items\"])} memories')"
+```
+
+### 3. Import into mataka (fast, no re-extraction)
+
+mataka's `import` mode skips LLM extraction — treats content as already-extracted facts. Embeddings are still generated (the fast part).
+
+```python
+import json, urllib.request
+
+memories = json.load(open('/tmp/hindsight.json'))['items']
+items = [{
+    'content': m['text'],
+    'tags': [f"hindsight_type:{m.get('type', 'world')}"],
+    'metadata': {'source': 'hindsight-migration'},
+    'import': True,           # ← skip LLM extraction
+    'fact_type': m.get('type', 'world')
+} for m in memories if m.get('text')]
+
+payload = json.dumps({'items': items, 'async': True}).encode()
+req = urllib.request.Request(
+    'http://localhost:8889/v1/default/banks/omp-memory/memories',
+    data=payload,
+    headers={'Content-Type': 'application/json'}
+)
+urllib.request.urlopen(req)
+print(f'Queued {len(items)} memories for embedding')
+```
+
+### 4. Configure omp to use mataka
+
+```bash
+# Add to ~/.zshrc
+export HINDSIGHT_API_URL=http://localhost:8889  # mataka, not Hindsight
+export HINDSIGHT_BANK_ID=omp-memory
+
+# Restart omp sessions
+```
+
+### 5. Stop Hindsight
+
+```bash
+hindsight-embed daemon stop
+```
+
+mataka now serves all memories on port 8889. The original Hindsight data remains untouched in its database — no data loss.
+
+
 ## Configuration
 
 mataka accepts both native `MATAKA_*` and upstream `HINDSIGHT_API_*` environment variables. `MATAKA_*` wins when both are set.
@@ -79,7 +151,6 @@ mataka accepts both native `MATAKA_*` and upstream `HINDSIGHT_API_*` environment
 | `MATAKA_DB` | `~/.local/share/mataka` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_EMBEDDINGS_MODEL` | — | Embeddings model name |
 | `MATAKA_PORT` | `8889` | Server listen port |
-| `MATAKA_DB` | `mataka-data` | Data directory (per-bank sharding) or legacy `.db` file path |
 | `MATAKA_VET` | `redact` | Vetting mode: `strict` (reject secrets), `redact` (replace in-place), `off` |
 
 Use `MATAKA_LLM_PROVIDER=mock` for deterministic offline development and testing.
