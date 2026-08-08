@@ -5,15 +5,33 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::sync::Semaphore;
+
+/// Bounded retries for transient failures only (busy/timeout) — never masks a
+/// wedged server indefinitely (see mataka incident: Ollama's queue silently
+/// stuck with 0 resident models for days, every /v1/* call 503ing).
+const MAX_ATTEMPTS: u32 = 4;
+const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct LlmClient {
     pub provider: String, // openai-compatible | mock
+    /// Embeddings endpoint (and chat's fallback when `chat_base_url` is unset).
     pub base_url: String,
+    /// Chat/completions endpoint. Defaults to `base_url` — set
+    /// `MATAKA_LLM_CHAT_BASE_URL` to route chat to a different server than
+    /// embeddings (e.g. a chat-only local model that has no embeddings
+    /// endpoint at all, like apfel or turbo-fieldfare).
+    pub chat_base_url: String,
     pub api_key: String,
     pub model: String,
     pub embed_model: String,
     http: reqwest::Client,
+    /// Caps in-flight requests so a burst can't queue hundreds deep against a
+    /// local single-model server (e.g. a small dedicated inference runtime).
+    concurrency: Arc<Semaphore>,
 }
 
 impl LlmClient {
@@ -26,13 +44,27 @@ impl LlmClient {
                 .or_else(|_| std::env::var(hindsight))
                 .unwrap_or_else(|_| default.to_string())
         }
+        let timeout_secs: u64 = std::env::var("MATAKA_LLM_TIMEOUT_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(120);
+        let max_concurrent: usize = std::env::var("MATAKA_LLM_MAX_CONCURRENT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        let base_url = pick(
+            "MATAKA_LLM_BASE_URL",
+            "HINDSIGHT_API_LLM_BASE_URL",
+            "http://localhost:11434/v1",
+        );
+        let chat_base_url = std::env::var("MATAKA_LLM_CHAT_BASE_URL")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| base_url.clone());
         Self {
             provider: pick("MATAKA_LLM_PROVIDER", "HINDSIGHT_API_LLM_PROVIDER", "mock"),
-            base_url: pick(
-                "MATAKA_LLM_BASE_URL",
-                "HINDSIGHT_API_LLM_BASE_URL",
-                "http://localhost:11434/v1",
-            ),
+            base_url,
+            chat_base_url,
             api_key: pick("MATAKA_LLM_API_KEY", "HINDSIGHT_API_LLM_API_KEY", ""),
             model: pick("MATAKA_LLM_MODEL", "HINDSIGHT_API_LLM_MODEL", "qwen2.5:7b"),
             embed_model: pick(
@@ -40,8 +72,51 @@ impl LlmClient {
                 "HINDSIGHT_API_EMBEDDINGS_MODEL",
                 "nomic-embed-text",
             ),
-            http: reqwest::Client::new(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(timeout_secs))
+                .build()
+                .expect("failed to build reqwest client"),
+            concurrency: Arc::new(Semaphore::new(max_concurrent.max(1))),
         }
+    }
+
+    /// POST `path` against `base_url` with bounded retry on 503 (busy) and
+    /// request timeouts. Holds a concurrency permit for the whole attempt
+    /// loop so retries don't bypass the cap. Any other status/error fails
+    /// immediately — this must never turn into an unbounded retry loop
+    /// against a genuinely wedged server (that's what silently broke mataka
+    /// against Ollama).
+    async fn post_json(&self, base_url: &str, path: &str, body: &Value) -> Result<Value> {
+        let _permit = self
+            .concurrency
+            .acquire()
+            .await
+            .expect("semaphore never closed");
+        let mut backoff = INITIAL_BACKOFF;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let outcome = self
+                .http
+                .post(format!("{base_url}{path}"))
+                .bearer_auth(&self.api_key)
+                .json(body)
+                .send()
+                .await;
+            match outcome {
+                Ok(resp) if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE => {
+                    if attempt == MAX_ATTEMPTS {
+                        return Err(anyhow!(
+                            "llm request to {path} still 503 after {MAX_ATTEMPTS} attempts"
+                        ));
+                    }
+                }
+                Ok(resp) => return Ok(resp.error_for_status()?.json().await?),
+                Err(e) if e.is_timeout() && attempt < MAX_ATTEMPTS => {}
+                Err(e) => return Err(e.into()),
+            }
+            tokio::time::sleep(backoff).await;
+            backoff *= 2;
+        }
+        unreachable!("loop returns or errors on its final attempt")
     }
 
     /// Chat completion returning raw text.
@@ -63,15 +138,8 @@ impl LlmClient {
         if json_mode {
             body["response_format"] = json!({"type": "json_object"});
         }
-        let resp: Value = self
-            .http
-            .post(format!("{}/chat/completions", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&body)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+        let resp = self
+            .post_json(&self.chat_base_url, "/chat/completions", &body)
             .await?;
         resp["choices"][0]["message"]["content"]
             .as_str()
@@ -84,15 +152,12 @@ impl LlmClient {
         if self.provider == "mock" {
             return Ok(texts.iter().map(|t| mock_embed(t)).collect());
         }
-        let resp: Value = self
-            .http
-            .post(format!("{}/embeddings", self.base_url))
-            .bearer_auth(&self.api_key)
-            .json(&json!({"model": self.embed_model, "input": texts}))
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
+        let resp = self
+            .post_json(
+                &self.base_url,
+                "/embeddings",
+                &json!({"model": self.embed_model, "input": texts}),
+            )
             .await?;
         let data = resp["data"]
             .as_array()
@@ -204,5 +269,116 @@ fn mock_chat(system: &str, user: &str) -> String {
             "[mock reflect] Based on retained memories, regarding: {}",
             user.chars().take(120).collect::<String>()
         )
+    }
+}
+
+#[cfg(test)]
+mod resilience_tests {
+    use super::*;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+    use axum::routing::post;
+    use axum::{Json, Router};
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Spins up a real HTTP server on a random port that returns 503 for the
+    /// first `fail_times` requests to `/chat/completions`, then 200.
+    async fn spawn_flaky_server(fail_times: u32) -> (String, Arc<AtomicU32>) {
+        let counter = Arc::new(AtomicU32::new(0));
+        let counter_for_route = counter.clone();
+        let app = Router::new().route(
+            "/chat/completions",
+            post(move |Json(_body): Json<Value>| {
+                let counter = counter_for_route.clone();
+                async move {
+                    let n = counter.fetch_add(1, Ordering::SeqCst);
+                    if n < fail_times {
+                        StatusCode::SERVICE_UNAVAILABLE.into_response()
+                    } else {
+                        Json(json!({"choices":[{"message":{"content":"ok after retry"}}]}))
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), counter)
+    }
+
+    fn client_for(base_url: String) -> LlmClient {
+        LlmClient {
+            provider: "openai-compatible".into(),
+            chat_base_url: base_url.clone(),
+            base_url,
+            api_key: String::new(),
+            model: "test-model".into(),
+            embed_model: "test-embed".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            concurrency: Arc::new(Semaphore::new(4)),
+        }
+    }
+
+    #[tokio::test]
+    async fn chat_retries_on_503_then_succeeds() {
+        let (base_url, _counter) = spawn_flaky_server(2).await;
+        let result = client_for(base_url).chat("sys", "user", false).await;
+        assert_eq!(result.unwrap(), "ok after retry");
+    }
+
+    #[tokio::test]
+    async fn chat_gives_up_after_max_attempts_instead_of_looping_forever() {
+        let (base_url, counter) = spawn_flaky_server(u32::MAX).await;
+        let result = client_for(base_url).chat("sys", "user", false).await;
+        assert!(result.is_err(), "must surface the error, not hang");
+        assert_eq!(counter.load(Ordering::SeqCst), MAX_ATTEMPTS);
+    }
+
+    #[tokio::test]
+    async fn chat_and_embed_route_to_independently_configured_servers() {
+        // Two separate servers: chat-only (embed unimplemented, matching
+        // apfel/turbo-fieldfare) and embed-only. Proves MATAKA_LLM_CHAT_BASE_URL
+        // actually decouples chat from the embeddings base_url.
+        let (chat_url, _c1) = spawn_flaky_server(0).await;
+        let embed_url = spawn_embed_server().await;
+
+        let client = LlmClient {
+            provider: "openai-compatible".into(),
+            chat_base_url: chat_url,
+            base_url: embed_url,
+            api_key: String::new(),
+            model: "chat-model".into(),
+            embed_model: "embed-model".into(),
+            http: reqwest::Client::builder()
+                .timeout(Duration::from_secs(5))
+                .build()
+                .unwrap(),
+            concurrency: Arc::new(Semaphore::new(4)),
+        };
+
+        let chat_result = client.chat("sys", "user", false).await.unwrap();
+        assert_eq!(chat_result, "ok after retry");
+
+        let embeddings = client.embed(&["hello".into()]).await.unwrap();
+        assert_eq!(embeddings, vec![vec![0.5_f32, 0.25]]);
+    }
+
+    async fn spawn_embed_server() -> String {
+        let app = Router::new().route(
+            "/embeddings",
+            post(|| async { Json(json!({"data": [{"embedding": [0.5, 0.25]}]})) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
     }
 }

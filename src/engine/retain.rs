@@ -17,10 +17,23 @@ use serde_json::Value;
 /// Source: https://github.com/vectorize-io/hindsight @ 29cc1d7
 const EXTRACTION_SYSTEM: &str = include_str!("../../prompts/extraction.md");
 
-/// ~2k tokens ≈ 8k chars (4 chars/token MVP estimator from recall.rs)
-const CHUNK_SIZE: usize = 8000;
-/// ~200 tokens overlap ≈ 800 chars
-const CHUNK_OVERLAP: usize = 800;
+/// ~2k tokens ≈ 8k chars (4 chars/token MVP estimator from recall.rs).
+/// Override via `MATAKA_RETAIN_CHUNK_CHARS` for chat models with a small
+/// context window — e.g. apfel's 4096 tokens is ~2000-2500 chars once the
+/// extraction system prompt (~725 tok) and output budget are subtracted.
+fn chunk_size() -> usize {
+    std::env::var("MATAKA_RETAIN_CHUNK_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8000)
+}
+/// ~200 tokens overlap ≈ 800 chars. Override via `MATAKA_RETAIN_CHUNK_OVERLAP_CHARS`.
+fn chunk_overlap() -> usize {
+    std::env::var("MATAKA_RETAIN_CHUNK_OVERLAP_CHARS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(800)
+}
 
 #[derive(Deserialize, Serialize)]
 struct ExtractedFact {
@@ -111,7 +124,7 @@ pub async fn retain(
         );
 
         // Chunk long inputs before extraction
-        let chunks = chunking::chunk_text(&content, CHUNK_SIZE, CHUNK_OVERLAP);
+        let chunks = chunking::chunk_text(&content, chunk_size(), chunk_overlap());
         let total_chunks = chunks.len();
 
         for (i, chunk) in chunks.iter().enumerate() {
