@@ -24,9 +24,22 @@ pub struct AppState {
 
 type S = Arc<AppState>;
 
+/// Liveness + LLM reachability. Always returns 200 with `status: "ok"` so
+/// existing liveness checks keep working, but includes a real probe of the
+/// generation path (embeddings — shared by retain and recall) so a wedged
+/// LLM (process up, `/api/tags` fine, `/v1/*` dead) is visible instead of
+/// silently "healthy". See the 2026-08-08 Ollama queue-wedge incident.
+async fn health(State(s): State<S>) -> Json<Value> {
+    let llm = match s.llm.check_llm().await {
+        Ok(elapsed) => json!({"reachable": true, "latency_ms": elapsed.as_millis()}),
+        Err(e) => json!({"reachable": false, "error": e.to_string()}),
+    };
+    Json(json!({"status": "ok", "llm": llm}))
+}
+
 pub fn router(state: S) -> Router {
     Router::new()
-        .route("/health", get(|| async { Json(json!({"status": "ok"})) }))
+        .route("/health", get(health))
         .route(
             "/version",
             get(|| async { Json(json!({"version": "0.1.0-mataka", "compat": "hindsight-0.8.4"})) }),

@@ -14,6 +14,9 @@ use tokio::sync::Semaphore;
 /// stuck with 0 resident models for days, every /v1/* call 503ing).
 const MAX_ATTEMPTS: u32 = 4;
 const INITIAL_BACKOFF: Duration = Duration::from_millis(500);
+/// `/health` probe budget — short so a health check never hangs or competes
+/// with real generation for long.
+const HEALTH_PROBE_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone)]
 pub struct LlmClient {
@@ -173,6 +176,31 @@ impl LlmClient {
             out.push(v);
         }
         Ok(out)
+    }
+
+    /// Fast LLM liveness probe for `/health`. Hits the embeddings path — the
+    /// one `retain` and `recall` both depend on — so a wedged generation queue
+    /// (ollama up, `/api/tags` fine, `/v1/*` dead) surfaces as unreachable.
+    /// Deliberately bypasses the concurrency semaphore and uses a short
+    /// timeout so health checks never block real work or hold the cap.
+    pub async fn check_llm(&self) -> Result<Duration> {
+        if self.provider == "mock" {
+            return Ok(Duration::ZERO);
+        }
+        let t0 = std::time::Instant::now();
+        tokio::time::timeout(HEALTH_PROBE_TIMEOUT, async {
+            self.http
+                .post(format!("{}/embeddings", self.base_url))
+                .bearer_auth(&self.api_key)
+                .json(&json!({"model": self.embed_model, "input": ["health"]}))
+                .send()
+                .await?
+                .error_for_status()?;
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .map_err(|_| anyhow!("llm health probe timed out after {HEALTH_PROBE_TIMEOUT:?}"))??;
+        Ok(t0.elapsed())
     }
 }
 
@@ -380,5 +408,36 @@ mod resilience_tests {
             axum::serve(listener, app).await.unwrap();
         });
         format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn health_probe_reports_unreachable_on_503() {
+        // 503 on the embeddings path (the exact wedge signature) -> probe fails.
+        let app = Router::new().route(
+            "/embeddings",
+            post(|| async { StatusCode::SERVICE_UNAVAILABLE.into_response() }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let client = client_for(format!("http://{addr}"));
+        assert!(client.check_llm().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn health_probe_reports_reachable_on_200() {
+        let url = spawn_embed_server().await;
+        let client = client_for(url);
+        assert!(client.check_llm().await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn health_probe_is_immediate_for_mock_provider() {
+        // Mock short-circuits before any network I/O, even to an unreachable host.
+        let mut client = client_for("http://127.0.0.1:1".into());
+        client.provider = "mock".into();
+        assert!(client.check_llm().await.is_ok());
     }
 }

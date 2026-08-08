@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.2.3
+
+### Features
+- `/health` now reports real LLM reachability instead of a static `{"status":"ok"}`.
+  It probes the embeddings path (shared by retain and recall) with a short timeout,
+  so a wedged generation backend — the 2026-08-08 Ollama incident where the process
+  was up, `/api/tags` returned 200, and every `/v1/*` call 503'd for 4+ days — is
+  visible via `GET /health`. The endpoint stays HTTP 200 with `status: "ok"` for
+  existing liveness checks and adds:
+  - `llm.reachable: true|false`
+  - `llm.latency_ms` (when reachable)
+  - `llm.error` (when unreachable)
+  The probe bypasses the concurrency semaphore and uses a 3s timeout so health
+  checks never block real work.
+
 ## v0.2.2
 
 ### Fixes
