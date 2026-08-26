@@ -1,6 +1,6 @@
 [package]
 name = "mataka"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 description = "Lean drop-in replacement for the Hindsight agent-memory API"
 license = "MIT"

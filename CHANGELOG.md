@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.2.4
+
+### Fixes
+- **Consolidation follow-on no longer pegs the local LLM server.** Every async
+  `retain` chained an unbounded full-bank consolidation pass. On a real ~9.3k-fact
+  bank that is up to ~786 fresh chat calls per retain — group membership drifts as
+  facts accumulate, so the old exact-source-set idempotency check never converged
+  (21.7k observations existed from only 2.4k distinct source sets). With OMP firing
+  retains per turn, this kept `llama-server` at 70-80% CPU for entire sessions
+  (2026-08-26 incident). Now:
+  - The retain follow-on is **scoped** to groups containing the just-stored facts
+    and **capped** at 8 LLM merge calls (`consolidate_scoped` +
+    `FOLLOW_ON_MAX_LLM_CALLS`). The explicit `POST /consolidate` endpoint keeps the
+    unbounded full-bank pass for manual runs.
+  - Idempotency is now coverage-based: a group is skipped when every member fact is
+    already an observation source — converges even when group membership drifts.
+  - The LLM's returned `source_ids` are filtered to the group's real fact IDs.
+    Hallucinated IDs were the recurring `consolidation follow-on failed:
+    FOREIGN KEY constraint failed` aborts in the log.
+  - Observation + provenance rows are inserted in a single transaction (no more
+    observations without provenance).
+
 ## v0.2.3
 
 ### Features
