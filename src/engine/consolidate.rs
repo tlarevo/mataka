@@ -10,6 +10,7 @@ use crate::store::{blob_to_f32s, cosine, f32s_to_blob, Store};
 use anyhow::Result;
 use rusqlite::params;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 /// Ported from upstream Hindsight consolidation/prompts.py — MIT License.
 /// Source: https://github.com/vectorize-io/hindsight
@@ -40,12 +41,40 @@ pub struct ConsolidateOutcome {
     pub observation_ids: Vec<String>,
 }
 
-/// Run consolidation on a bank. Groups semantically similar facts (cosine ≥ 0.80,
-/// types world/experience), then calls LLM to merge each group into an observation.
+/// Full-bank consolidation pass — the explicit `/consolidate` endpoint.
+/// Unbounded: merges every qualifying group. Background follow-on use must
+/// go through [`consolidate_scoped`] instead.
 pub async fn consolidate(
     store: &Store,
     llm: &LlmClient,
     bank_id: &str,
+) -> Result<ConsolidateOutcome> {
+    consolidate_scoped(store, llm, bank_id, &[], usize::MAX).await
+}
+
+/// Budget for retain follow-on consolidation passes. Each merge is a full
+/// chat completion (~5-15s of local inference), so a follow-on can never
+/// fan out unbounded.
+pub const FOLLOW_ON_MAX_LLM_CALLS: usize = 8;
+
+/// Bounded consolidation pass for the retain follow-on chain.
+///
+/// - `focus_ids`: non-empty → only groups containing at least one of these
+///   units (the facts just retained) are considered.
+/// - `max_llm_calls`: hard cap on LLM merge calls this pass.
+///
+/// Full-bank unbounded passes used to run after every async retain. On a
+/// ~9.3k-fact bank that meant hundreds of fresh chat calls per retain
+/// (group membership drifts as facts accumulate, so exact-set idempotency
+/// never converged), pegging the local inference server near 80% CPU — the
+/// 2026-08-26 incident. Scoping + capping bounds follow-on work to the new
+/// facts only.
+pub async fn consolidate_scoped(
+    store: &Store,
+    llm: &LlmClient,
+    bank_id: &str,
+    focus_ids: &[String],
+    max_llm_calls: usize,
 ) -> Result<ConsolidateOutcome> {
     store.ensure_bank(bank_id)?;
 
@@ -81,11 +110,40 @@ pub async fn consolidate(
     // 2. Group by cosine similarity (greedy single-linkage)
     let groups = find_similar_groups(&candidates);
 
+    // Facts already serving as a source of some observation. A group whose
+    // members are all covered was already consolidated — skip it. Replaces
+    // the old exact-source-set check, which never converged once group
+    // membership drifted by even one fact (21.7k observations from 2.4k
+    // distinct sets on the live bank).
+    let mut covered: HashSet<String> = {
+        let conn = bank.read_conn();
+        let mut stmt = conn.prepare(
+            "SELECT DISTINCT os.source_unit_id FROM observation_sources os
+             JOIN memory_units mu ON mu.id = os.observation_id
+             WHERE mu.bank_id = ?1 AND mu.fact_type = 'observation'",
+        )?;
+        let ids: HashSet<String> = stmt
+            .query_map(params![bank_id], |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        ids
+    };
+
+    let focus: Option<HashSet<&str>> = if focus_ids.is_empty() {
+        None
+    } else {
+        Some(focus_ids.iter().map(|s| s.as_str()).collect())
+    };
+
     // 3. For each group, call LLM and create observation
     let mut total_created = 0usize;
     let mut all_obs_ids = Vec::new();
+    let mut llm_calls = 0usize;
 
     for group in &groups {
+        if llm_calls >= max_llm_calls {
+            break;
+        }
         if group.len() < MIN_GROUP_SIZE {
             continue;
         }
@@ -93,15 +151,24 @@ pub async fn consolidate(
         // Collect source IDs for this group
         let source_ids: Vec<String> = group.iter().map(|&i| candidates[i].id.clone()).collect();
 
-        // Check idempotency: skip if an observation with this exact source set already exists
-        if observation_exists_with_sources(store, bank_id, &source_ids)? {
+        // Focus filter: background passes only touch groups with new facts.
+        if let Some(f) = &focus {
+            if !source_ids.iter().any(|id| f.contains(id.as_str())) {
+                continue;
+            }
+        }
+
+        // Convergent idempotency: every member already consolidated.
+        if source_ids.iter().all(|id| covered.contains(id)) {
             continue;
         }
 
+        llm_calls += 1;
         let outcome = consolidate_group(store, llm, bank_id, &candidates, group).await?;
         if let Some(obs_id) = outcome {
             total_created += 1;
             all_obs_ids.push(obs_id);
+            covered.extend(source_ids.iter().cloned());
         }
     }
 
@@ -159,58 +226,6 @@ fn find_similar_groups(candidates: &[FactCandidate]) -> Vec<Vec<usize>> {
 
     groups
 }
-/// Check if an observation already exists with the exact same source set (idempotency).
-fn observation_exists_with_sources(
-    store: &Store,
-    bank_id: &str,
-    source_ids: &[String],
-) -> Result<bool> {
-    let bank = store.get_bank(bank_id)?;
-    let conn = bank.read_conn();
-
-    // Get all existing observation IDs for this bank
-    let mut stmt =
-        conn.prepare("SELECT id FROM memory_units WHERE bank_id=?1 AND fact_type='observation'")?;
-    let obs_ids: Vec<String> = stmt
-        .query_map(params![bank_id], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    if obs_ids.is_empty() {
-        return Ok(false);
-    }
-
-    // Quick reject by count
-    let target_count = source_ids.len() as i64;
-    let mut sorted_target: Vec<&str> = source_ids.iter().map(|s| s.as_str()).collect();
-    sorted_target.sort();
-
-    for obs_id in &obs_ids {
-        let count: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM observation_sources WHERE observation_id=?1",
-            params![obs_id],
-            |r| r.get(0),
-        )?;
-        if count != target_count {
-            continue;
-        }
-        // Count matches — verify set equality via sorted comparison
-        let mut stmt2 =
-            conn.prepare("SELECT source_unit_id FROM observation_sources WHERE observation_id=?1")?;
-        let existing: Vec<String> = stmt2
-            .query_map(params![obs_id], |r| r.get(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        drop(stmt2);
-        let mut sorted_existing: Vec<&str> = existing.iter().map(|s| s.as_str()).collect();
-        sorted_existing.sort();
-        if sorted_existing == sorted_target {
-            return Ok(true);
-        }
-    }
-
-    Ok(false)
-}
 
 /// Consolidate a group of facts via LLM (or mock), insert observation + provenance.
 async fn consolidate_group(
@@ -249,31 +264,54 @@ async fn consolidate_group(
         return Ok(None);
     }
 
+    // Provenance may only cite facts in this group. The LLM occasionally
+    // returns hallucinated IDs, which broke the FK constraint and aborted
+    // the whole pass ("consolidation follow-on failed: FOREIGN KEY
+    // constraint failed").
+    let group_id_set: HashSet<&str> = group_facts.iter().map(|f| f.id.as_str()).collect();
+    let source_ids: Vec<String> = result
+        .source_ids
+        .into_iter()
+        .filter(|id| group_id_set.contains(id.as_str()))
+        .collect();
+    if source_ids.is_empty() {
+        return Ok(None);
+    }
+
     // Embed the observation
     let embeddings = llm
         .embed(std::slice::from_ref(&result.observation_text))
         .await?;
     let emb = embeddings.into_iter().next().unwrap_or_default();
 
-    // Insert observation as memory_units row
+    // Insert observation as memory_units row — one transaction so a failure
+    // can never leave an observation without its provenance.
     let obs_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     {
         let bank = store.get_bank(bank_id)?;
         let conn = bank.get_write_conn();
-        conn.execute(
-            "INSERT INTO memory_units(id, bank_id, text, fact_type, context, occurred_start, occurred_end, mentioned_at, tags, metadata, embedding, created_at)
-             VALUES (?1,?2,?3,'observation',NULL,NULL,NULL,?4,'[]','{}',?5,?4)",
-            params![obs_id, bank_id, result.observation_text, now, f32s_to_blob(&emb)],
-        )?;
-
-        // Record provenance
-        for source_id in &result.source_ids {
+        conn.execute_batch("BEGIN")?;
+        let tx_result = (|| -> Result<()> {
             conn.execute(
-                "INSERT OR IGNORE INTO observation_sources(observation_id, source_unit_id) VALUES (?1,?2)",
-                params![obs_id, source_id],
+                "INSERT INTO memory_units(id, bank_id, text, fact_type, context, occurred_start, occurred_end, mentioned_at, tags, metadata, embedding, created_at)
+                 VALUES (?1,?2,?3,'observation',NULL,NULL,NULL,?4,'[]','{}',?5,?4)",
+                params![obs_id, bank_id, result.observation_text, now, f32s_to_blob(&emb)],
             )?;
-        }
+            for source_id in &source_ids {
+                conn.execute(
+                    "INSERT OR IGNORE INTO observation_sources(observation_id, source_unit_id) VALUES (?1,?2)",
+                    params![obs_id, source_id],
+                )?;
+            }
+            Ok(())
+        })();
+        conn.execute_batch(if tx_result.is_ok() {
+            "COMMIT"
+        } else {
+            "ROLLBACK"
+        })?;
+        tx_result?;
     }
 
     Ok(Some(obs_id))
@@ -576,6 +614,94 @@ mod tests {
         assert_eq!(
             obs_count_after_first, obs_count_after_second,
             "observation count should not change on second consolidate"
+        );
+    }
+
+    // ── 2026-08-26 CPU-incident regression tests ─────────────────────────
+    // The retain follow-on used to run an unbounded full-bank pass — hundreds
+    // of LLM calls per retain on a real bank, pegging the local inference
+    // server. These pin the follow-on contract: scoped + budget-capped.
+
+    #[tokio::test]
+    async fn follow_on_scoped_pass_only_touches_focused_group() {
+        let (store, _dir) = test_store();
+        let llm = test_llm();
+        let bank = "test-scoped-focus";
+
+        // Two unrelated similar pairs → two independent groups.
+        insert_fact(&store, bank, "a1", "Alice likes hiking");
+        insert_fact(&store, bank, "a2", "Alice likes hiking trails");
+        insert_fact(&store, bank, "b1", "Bob likes pizza");
+        insert_fact(&store, bank, "b2", "Bob really likes pizza");
+
+        // Focus the pass on group A only (as a retain follow-on would).
+        let outcome = consolidate_scoped(&store, &llm, bank, &["a1".into(), "a2".into()], 100)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.observations_created, 1,
+            "focused pass should consolidate exactly the focused group"
+        );
+        // Provenance cites only group-A facts.
+        assert_eq!(
+            count_rows(
+                &store,
+                bank,
+                "SELECT COUNT(*) FROM observation_sources WHERE source_unit_id IN ('a1','a2')"
+            ),
+            count_rows(&store, bank, "SELECT COUNT(*) FROM observation_sources"),
+            "no provenance outside the focused group"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_on_pass_caps_llm_calls() {
+        let (store, _dir) = test_store();
+        let llm = test_llm();
+        let bank = "test-scoped-cap";
+
+        // Three independent similar pairs → three groups, three potential calls.
+        insert_fact(&store, bank, "a1", "Alice likes hiking");
+        insert_fact(&store, bank, "a2", "Alice likes hiking trails");
+        insert_fact(&store, bank, "b1", "Bob likes pizza");
+        insert_fact(&store, bank, "b2", "Bob really likes pizza");
+        insert_fact(&store, bank, "c1", "Carol likes sailing");
+        insert_fact(&store, bank, "c2", "Carol enjoys sailing boats");
+
+        let outcome = consolidate_scoped(&store, &llm, bank, &[], 2)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.observations_created, 2,
+            "max_llm_calls=2 must stop the pass at 2 merges, not 3"
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_on_pass_skips_groups_already_covered() {
+        let (store, _dir) = test_store();
+        let llm = test_llm();
+        let bank = "test-scoped-covered";
+
+        insert_fact(&store, bank, "f1", "Alice likes hiking");
+        insert_fact(&store, bank, "f2", "Alice likes hiking trails");
+
+        let first = consolidate_scoped(&store, &llm, bank, &[], 100)
+            .await
+            .unwrap();
+        assert_eq!(first.observations_created, 1);
+
+        // Same facts, second pass: every member is already a provenance
+        // source, so nothing is re-consolidated — even though group
+        // membership can drift, coverage converges.
+        let second = consolidate_scoped(&store, &llm, bank, &[], 100)
+            .await
+            .unwrap();
+        assert_eq!(
+            second.observations_created, 0,
+            "already-covered facts must not trigger another LLM merge"
         );
     }
 }

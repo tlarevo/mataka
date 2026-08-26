@@ -226,10 +226,21 @@ async fn retain_memories(
                         "completed",
                         Some(&detail),
                     );
-                    // Chain consolidation as follow-on (THA-128)
+                    // Chain consolidation as follow-on (THA-128) — scoped to
+                    // the facts just stored and budget-capped. An unbounded
+                    // full-bank pass here pegged the local LLM server
+                    // (2026-08-26 CPU incident).
                     let store2 = &state.store;
                     let llm2 = &state.llm;
-                    if let Err(e) = engine::consolidate::consolidate(store2, llm2, &bank).await {
+                    if let Err(e) = engine::consolidate::consolidate_scoped(
+                        store2,
+                        llm2,
+                        &bank,
+                        &out.memory_ids,
+                        engine::consolidate::FOLLOW_ON_MAX_LLM_CALLS,
+                    )
+                    .await
+                    {
                         tracing::warn!("consolidation follow-on failed: {e}");
                     }
                 }
